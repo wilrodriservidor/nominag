@@ -38,14 +38,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['empleado_id'])) {
     $contrato = $stmt_con->fetch();
 
     if ($contrato) {
-        // REGLA DE ORO: En tu SQL la tabla asistencia_diaria tiene 'festivo' (0 o 1)
-        // Calculamos horas normales y festivas por separado
+        // CORRECCIÓN REGLA DE ORO: Usamos las columnas reales del SQL (horas_diurnas, horas_nocturnas, horas_festivas, horas_festivas_nocturnas)
         $stmt_asistencia = $pdo->prepare("
             SELECT 
-                SUM(CASE WHEN festivo = 0 THEN horas_diurnas ELSE 0 END) as hd_normal, 
-                SUM(CASE WHEN festivo = 0 THEN horas_nocturnas ELSE 0 END) as hn_normal,
-                SUM(CASE WHEN festivo = 1 THEN horas_diurnas ELSE 0 END) as hd_festiva,
-                SUM(CASE WHEN festivo = 1 THEN horas_nocturnas ELSE 0 END) as hn_festiva
+                SUM(horas_diurnas) as hd_normal, 
+                SUM(horas_nocturnas) as hn_normal,
+                SUM(horas_festivas) as hd_festiva,
+                SUM(horas_festivas_nocturnas) as hn_festiva
             FROM asistencia_diaria 
             WHERE empleado_id = ? AND fecha BETWEEN ? AND ?
         ");
