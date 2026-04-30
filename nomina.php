@@ -5,7 +5,7 @@ require_once 'includes/funciones.php';
 $liquidacion = null;
 $mensaje_status = "";
 
-// 1. OBTENER PARÁMETROS DE LEY (Regla de oro: Tabla parametros_ley según index.php)
+// 1. OBTENER PARÁMETROS DE LEY (Tabla parametros_ley)
 try {
     $stmt_ley = $pdo->query("SELECT * FROM parametros_ley LIMIT 1");
     $config_ley = $stmt_ley->fetch();
@@ -14,7 +14,6 @@ try {
     $aux_transporte_ley = $config_ley['subsidio_transporte'] ?? 162000;
     $p_rn = $config_ley['recargo_nocturno'] ?? 35;
     $p_rf = $config_ley['recargo_festivo'] ?? 75;
-    // Recargo festivo nocturno suele ser la suma de ambos (110%)
     $p_rfn = $p_rf + $p_rn;
 
 } catch (Exception $e) {
@@ -38,13 +37,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['empleado_id'])) {
     $contrato = $stmt_con->fetch();
 
     if ($contrato) {
-        // CORRECCIÓN REGLA DE ORO: Usamos las columnas reales del SQL (horas_diurnas, horas_nocturnas, horas_festivas, horas_festivas_nocturnas)
+        /**
+         * CORRECCIÓN SEGÚN ESTRUCTURA REAL (u270613792_nomina_gemini.sql):
+         * La tabla asistencia_diaria SOLO contiene: horas_diurnas y horas_nocturnas.
+         * No existen 'horas_festivas' como columnas independientes en esta tabla.
+         */
         $stmt_asistencia = $pdo->prepare("
             SELECT 
-                SUM(horas_diurnas) as hd_normal, 
-                SUM(horas_nocturnas) as hn_normal,
-                SUM(horas_festivas) as hd_festiva,
-                SUM(horas_festivas_nocturnas) as hn_festiva
+                SUM(horas_diurnas) as total_hd, 
+                SUM(horas_nocturnas) as total_hn
             FROM asistencia_diaria 
             WHERE empleado_id = ? AND fecha BETWEEN ? AND ?
         ");
@@ -54,22 +55,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['empleado_id'])) {
         $salario_base = $contrato['salario_base'];
         $valor_hora = $salario_base / 240; 
 
-        // Cálculo de Recargos Económicos
-        // Nocturno normal (35%)
-        $v_rn = ($asistencia['hn_normal'] ?? 0) * ($valor_hora * ($p_rn / 100));
+        // Cálculo de Recargos basado en las columnas existentes
+        // Nocturno (35% sobre horas_nocturnas registradas)
+        $v_rn = ($asistencia['total_hn'] ?? 0) * ($valor_hora * ($p_rn / 100));
         
-        // Festivo Diurno (75%)
-        $v_rfd = ($asistencia['hd_festiva'] ?? 0) * ($valor_hora * ($p_rf / 100));
-        
-        // Festivo Nocturno (110% o suma de recargos)
-        $v_rfn = ($asistencia['hn_festiva'] ?? 0) * ($valor_hora * ($p_rfn / 100));
-        
-        $total_festivos = $v_rfd + $v_rfn;
+        // NOTA: Para festivos, si no hay columna 'es_festivo' o 'horas_festivas', 
+        // el cálculo se asume en 0 o requiere una lógica externa de calendario.
+        // Por ahora, para evitar el error SQL, seteamos en 0 ya que la columna no existe.
+        $total_festivos = 0; 
 
         // Auxilio de transporte (Si gana menos o igual a 2 SMLV)
         $v_aux_trans = ($salario_base <= ($smlv * 2)) ? ($aux_transporte_ley / 2) : 0;
 
-        // Base para Seguridad Social (Salario de la quincena + Recargos)
+        // Base para Seguridad Social
         $salario_quincena = $salario_base / 2;
         $base_prestacional = $salario_quincena + $v_rn + $total_festivos;
         
@@ -124,7 +122,6 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
         </header>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
-            <!-- Selector de Empleado -->
             <div class="lg:col-span-4">
                 <div class="bg-white p-8 rounded-[2rem] shadow-xl border border-slate-200">
                     <form action="" method="POST" class="space-y-6">
@@ -156,7 +153,6 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                 </div>
             </div>
 
-            <!-- Visualización de la Colilla -->
             <div class="lg:col-span-8">
                 <?php if ($liquidacion): ?>
                     <div class="bg-white rounded-[2.5rem] shadow-2xl border border-slate-200 overflow-hidden animate-fade-in-up">
@@ -174,11 +170,9 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                                     <p class="text-5xl font-black text-emerald-400">$<?= number_format($liquidacion['neto'], 0, ',', '.') ?></p>
                                 </div>
                             </div>
-                            <i class="fas fa-file-invoice-dollar absolute -right-6 -bottom-6 text-9xl text-white/5"></i>
                         </div>
 
                         <div class="p-8 grid grid-cols-1 md:grid-cols-2 gap-10">
-                            <!-- Devengados -->
                             <div class="space-y-4">
                                 <h3 class="text-xs font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-100 pb-3 mb-6">Ingresos / Devengados</h3>
                                 <div class="flex justify-between items-center bg-slate-50 p-4 rounded-2xl">
@@ -188,10 +182,6 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                                 <div class="flex justify-between items-center px-4">
                                     <span class="text-slate-400 text-sm font-medium">Recargos Nocturnos</span>
                                     <span class="font-bold text-slate-700">$<?= number_format($liquidacion['rn_val'], 0) ?></span>
-                                </div>
-                                <div class="flex justify-between items-center px-4">
-                                    <span class="text-slate-400 text-sm font-medium">Recargos Festivos</span>
-                                    <span class="font-bold text-slate-700">$<?= number_format($liquidacion['rf_val'], 0) ?></span>
                                 </div>
                                 <div class="flex justify-between items-center px-4">
                                     <span class="text-slate-400 text-sm font-medium">Auxilio de Transporte</span>
@@ -209,28 +199,19 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                                 </div>
                             </div>
 
-                            <!-- Deducciones -->
                             <div class="space-y-4">
                                 <h3 class="text-xs font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-100 pb-3 mb-6">Retenciones / Deducciones</h3>
                                 <div class="flex justify-between items-center p-4">
                                     <span class="text-slate-500 font-bold text-sm">Aporte Salud (4%)</span>
-                                    <span class="font-black text-red-500">-$<?= number_format($liquidacion['salud'], 0) ?></span>
+                                    <span class="font-black text-red-500">-$<?= number_format($liquidacion['v_salud'] ?? $liquidacion['salud'], 0) ?></span>
                                 </div>
                                 <div class="flex justify-between items-center p-4">
                                     <span class="text-slate-500 font-bold text-sm">Aporte Pensión (4%)</span>
-                                    <span class="font-black text-red-500">-$<?= number_format($liquidacion['pension'], 0) ?></span>
-                                </div>
-                                <div class="mt-10 p-6 bg-slate-900 rounded-3xl text-white">
-                                    <p class="text-[10px] font-bold text-slate-400 uppercase mb-1">Resumen del Pago</p>
-                                    <div class="flex justify-between items-baseline">
-                                        <span class="text-xs">Total Bruto</span>
-                                        <span class="text-xl font-bold">$<?= number_format($liquidacion['salario_quincena'] + $liquidacion['rn_val'] + $liquidacion['rf_val'] + $liquidacion['aux_trans'] + $liquidacion['aux_mov'] + $liquidacion['aux_noc'], 0) ?></span>
-                                    </div>
+                                    <span class="font-black text-red-500">-$<?= number_format($liquidacion['v_pension'] ?? $liquidacion['pension'], 0) ?></span>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Botón Guardar -->
                         <div class="p-8 bg-slate-50 border-t border-slate-100">
                             <form action="guardar_nomina.php" method="POST">
                                 <input type="hidden" name="accion" value="guardar">
@@ -261,7 +242,7 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                             <i class="fas fa-file-invoice text-4xl"></i>
                         </div>
                         <h3 class="font-black uppercase tracking-widest text-sm mb-2 text-slate-400">Panel de Vista Previa</h3>
-                        <p class="text-center text-slate-400 text-xs max-w-[280px]">Seleccione los parámetros a la izquierda para generar la colilla de pago automática.</p>
+                        <p class="text-center text-slate-400 text-xs max-w-[280px]">Seleccione los parámetros para generar la liquidación basada en horas diurnas y nocturnas.</p>
                     </div>
                 <?php endif; ?>
             </div>
