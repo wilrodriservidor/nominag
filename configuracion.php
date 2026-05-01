@@ -1,308 +1,387 @@
 <?php
-/**
- * SISTEMA DE GESTIÓN DE NÓMINA - COLOMBIANETWORKS
- * Archivo: configuracion.php - VERSIÓN AUTO-REPARABLE
- */
-
+// Desactivar visualización de errores para que no rompan el HTML en producción
 error_reporting(E_ALL);
-ini_set('display_errors', 1);
+ini_set('display_errors', 0);
 
-$db_path = 'config/db.php';
-if (!file_exists($db_path)) {
-    die("Error crítico: El archivo config/db.php no existe.");
-}
-require_once $db_path;
+require_once 'config/db.php';
 
 $mensaje = "";
 
-// --- FUNCIÓN DE REPARACIÓN MAESTRA (Ejecutada automáticamente o por botón) ---
-function repararEstructura($pdo) {
+/**
+ * FUNCIÓN DE AUTO-REPARACIÓN
+ * Crea las tablas si no existen para evitar el Fatal Error
+ */
+function asegurarEstructura($pdo) {
     try {
-        $pdo->exec("CREATE TABLE IF NOT EXISTS configuracion_ley (
+        // Crear tabla de configuración de ley si no existe
+        $pdo->exec("CREATE TABLE IF NOT EXISTS config_ley (
             id INT AUTO_INCREMENT PRIMARY KEY,
-            nombre_periodo VARCHAR(100) NOT NULL,
-            fecha_inicio DATE NOT NULL,
-            fecha_fin DATE NULL,
-            valor_smlv DECIMAL(15,2) NOT NULL,
-            subsidio_transporte DECIMAL(15,2) NOT NULL,
+            anio INT NOT NULL,
+            smlv DECIMAL(15,2) NOT NULL,
+            aux_transporte DECIMAL(15,2) DEFAULT 0,
+            salud_empleado DECIMAL(5,2) DEFAULT 4.00,
+            pension_empleado DECIMAL(5,2) DEFAULT 4.00,
             recargo_nocturno DECIMAL(5,2) DEFAULT 35.00,
             recargo_festivo DECIMAL(5,2) DEFAULT 75.00,
-            horas_semanales INT DEFAULT 47,
-            activo TINYINT DEFAULT 1
+            recargo_festivo_nocturno DECIMAL(5,2) DEFAULT 110.00
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
 
-        $pdo->exec("CREATE TABLE IF NOT EXISTS empleados (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            cedula VARCHAR(20) UNIQUE NOT NULL,
-            nombre_completo VARCHAR(150) NOT NULL,
-            fecha_ingreso DATE NOT NULL,
-            estado TINYINT DEFAULT 1
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-
-        $pdo->exec("CREATE TABLE IF NOT EXISTS contratos (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            empleado_id INT NOT NULL,
-            salario_base DECIMAL(15,2) NOT NULL,
-            es_direccion_confianza TINYINT DEFAULT 0,
-            aux_movilizacion_mensual DECIMAL(15,2) DEFAULT 0,
-            aux_mov_nocturno_mensual DECIMAL(15,2) DEFAULT 0,
-            fecha_inicio DATE NOT NULL,
-            activo TINYINT DEFAULT 1
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-
-        // Insertar periodo inicial si está vacía (Regla de oro: parametrización por ley)
-        $check = $pdo->query("SELECT COUNT(*) FROM configuracion_ley")->fetchColumn();
+        // Asegurar que exista al menos un registro inicial
+        $check = $pdo->query("SELECT COUNT(*) FROM config_ley")->fetchColumn();
         if ($check == 0) {
-            $pdo->exec("INSERT INTO configuracion_ley (nombre_periodo, fecha_inicio, valor_smlv, subsidio_transporte, horas_semanales) 
-                        VALUES ('Vigencia Inicial 2024 (Ley 2101)', '2024-01-01', 1300000, 162000, 47)");
+            $pdo->exec("INSERT INTO config_ley (anio, smlv, aux_transporte) VALUES (".date('Y').", 1300000, 162000)");
         }
-        return true;
+
+        // Crear tabla de festivos
+        $pdo->exec("CREATE TABLE IF NOT EXISTS festivos (
+            id INT AUTO_INCREMENT PRIMARY KEY, 
+            fecha DATE UNIQUE, 
+            descripcion VARCHAR(100)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+
     } catch (Exception $e) {
-        return $e->getMessage();
+        return "Error al inicializar tablas: " . $e->getMessage();
     }
 }
 
-// Intentar reparar automáticamente si hay error de tabla no encontrada
-if (isset($_POST['reparar_db'])) {
-    $res = repararEstructura($pdo);
-    if ($res === true) {
-        $mensaje = "<div class='bg-emerald-500 text-white p-4 rounded-xl mb-6 shadow-lg'>Estructura de base de datos sincronizada.</div>";
-    } else {
-        $mensaje = "<div class='bg-red-500 text-white p-4 rounded-xl mb-6'>Error: $res</div>";
-    }
-}
+// Ejecutar aseguramiento de tablas antes de cualquier consulta
+asegurarEstructura($pdo);
 
-// --- PROCESAMIENTO DE FORMULARIOS ---
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['accion'])) {
+/**
+ * FUNCIÓN PARA DETECTAR COLUMNAS REALES
+ */
+function obtenerColumnaAnio($pdo) {
     try {
-        if ($_POST['accion'] == 'crear_empleado' || $_POST['accion'] == 'editar_empleado') {
-            $pdo->beginTransaction();
-            if ($_POST['accion'] == 'crear_empleado') {
-                $stmt = $pdo->prepare("INSERT INTO empleados (cedula, nombre_completo, fecha_ingreso) VALUES (?, ?, ?)");
-                $stmt->execute([$_POST['cedula'], $_POST['nombre_completo'], $_POST['fecha_ingreso']]);
-                $emp_id = $pdo->lastInsertId();
-
-                $stmt_c = $pdo->prepare("INSERT INTO contratos (empleado_id, salario_base, es_direccion_confianza, aux_movilizacion_mensual, aux_mov_nocturno_mensual, fecha_inicio, activo) VALUES (?, ?, ?, ?, ?, ?, 1)");
-                $stmt_c->execute([$emp_id, $_POST['salario_base'], isset($_POST['confianza']) ? 1 : 0, $_POST['aux_mov'] ?: 0, $_POST['aux_noc'] ?: 0, $_POST['fecha_ingreso']]);
-            } else {
-                $stmt = $pdo->prepare("UPDATE empleados SET nombre_completo = ?, cedula = ? WHERE id = ?");
-                $stmt->execute([$_POST['nombre_completo'], $_POST['cedula'], $_POST['id']]);
-                
-                $stmt_c = $pdo->prepare("UPDATE contratos SET salario_base = ?, es_direccion_confianza = ?, aux_movilizacion_mensual = ?, aux_mov_nocturno_mensual = ? WHERE empleado_id = ? AND activo = 1");
-                $stmt_c->execute([$_POST['salario_base'], isset($_POST['confianza']) ? 1 : 0, $_POST['aux_mov'], $_POST['aux_noc'], $_POST['id']]);
-            }
-            $pdo->commit();
-            $mensaje = "<div class='bg-indigo-600 text-white p-4 rounded-xl mb-6'>Operación exitosa con el empleado.</div>";
-        }
-
-        if ($_POST['accion'] == 'guardar_periodo') {
-            $stmt = $pdo->prepare("INSERT INTO configuracion_ley (nombre_periodo, fecha_inicio, fecha_fin, valor_smlv, subsidio_transporte, recargo_nocturno, recargo_festivo, horas_semanales) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$_POST['nombre'], $_POST['inicio'], $_POST['fin'] ?: null, $_POST['smlv'], $_POST['subsidio'], $_POST['nocturno'], $_POST['festivo'], $_POST['horas']]);
-            $mensaje = "<div class='bg-amber-500 text-white p-4 rounded-xl mb-6'>Nuevo periodo de ley registrado.</div>";
-        }
+        $rs = $pdo->query("SHOW COLUMNS FROM config_ley");
+        $columnas = $rs->fetchAll(PDO::FETCH_COLUMN);
+        if (in_array('anio', $columnas)) return 'anio';
+        if (in_array('vigencia', $columnas)) return 'vigencia';
+        return 'id';
     } catch (Exception $e) {
-        if ($pdo->inTransaction()) $pdo->rollBack();
-        $mensaje = "<div class='bg-red-500 text-white p-4 rounded-xl mb-6'>Error: " . $e->getMessage() . "</div>";
+        return 'id';
     }
 }
 
-// --- CARGA DE DATOS SEGURA ---
-$empleados = [];
-$periodos = [];
+$col_anio = obtenerColumnaAnio($pdo);
 
-try {
-    $empleados = $pdo->query("SELECT e.*, c.salario_base, c.es_direccion_confianza, c.aux_movilizacion_mensual, c.aux_mov_nocturno_mensual FROM empleados e LEFT JOIN contratos c ON e.id = c.empleado_id AND c.activo = 1 ORDER BY e.nombre_completo ASC")->fetchAll();
-    $periodos = $pdo->query("SELECT * FROM configuracion_ley ORDER BY fecha_inicio DESC")->fetchAll();
-} catch (Exception $e) {
-    // Si falla, intentamos reparar una vez y avisamos
-    repararEstructura($pdo);
-    $mensaje .= "<div class='bg-orange-500 text-white p-4 rounded-xl mb-6'>Se detectaron tablas faltantes. Se ha intentado una reparación automática. Por favor refresque la página.</div>";
+// --- LÓGICA DE REPARACIÓN MANUAL (Botón Sincronizar) ---
+if (isset($_POST['reparar_db'])) {
+    try {
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_nocturno DECIMAL(5,2) DEFAULT 35.00");
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_festivo DECIMAL(5,2) DEFAULT 75.00");
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_festivo_nocturno DECIMAL(5,2) DEFAULT 110.00");
+        $mensaje = "Estructura sincronizada correctamente.";
+    } catch (Exception $e) { $mensaje = "Aviso: " . $e->getMessage(); }
 }
+
+// --- CARGA DE CSV ---
+if (isset($_FILES['csv_festivos']) && $_FILES['csv_festivos']['size'] > 0) {
+    $handle = fopen($_FILES['csv_festivos']['tmp_name'], "r");
+    fgetcsv($handle); // saltar cabecera
+    $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (descripcion, fecha) VALUES (?, ?)");
+    while (($datos = fgetcsv($handle, 1000, ",")) !== FALSE) {
+        if (count($datos) >= 2) $stmt->execute([trim($datos[0]), trim($datos[1])]);
+    }
+    fclose($handle);
+    $mensaje = "Festivos importados correctamente.";
+}
+
+// --- ELIMINAR FESTIVO ---
+if (isset($_GET['del_festivo'])) {
+    $stmt = $pdo->prepare("DELETE FROM festivos WHERE id = ?");
+    $stmt->execute([(int)$_GET['del_festivo']]);
+    header("Location: configuracion.php?msg=deleted");
+    exit;
+}
+if(isset($_GET['msg']) && $_GET['msg'] == 'deleted') $mensaje = "Festivo eliminado.";
+
+// --- AGREGAR FESTIVO INDIVIDUAL ---
+if (isset($_POST['agregar_festivo'])) {
+    $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (fecha, descripcion) VALUES (?, ?)");
+    $stmt->execute([$_POST['fecha_festivo'], $_POST['desc_festivo']]);
+    $mensaje = "Festivo agregado.";
+}
+
+// --- GUARDAR PARÁMETROS LEY ---
+if (isset($_POST['guardar_ley'])) {
+    $stmt = $pdo->prepare("INSERT INTO config_ley ($col_anio, smlv, aux_transporte, salud_empleado, pension_empleado, recargo_nocturno, recargo_festivo, recargo_festivo_nocturno) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    $stmt->execute([$_POST['anio_val'], $_POST['smlv'], $_POST['aux_t'], $_POST['salud'], $_POST['pension'], $_POST['r_noc'], $_POST['r_fes'], $_POST['r_fes_noc']]);
+    $mensaje = "Parámetros actualizados correctamente.";
+}
+
+// --- ACCIONES DE EMPLEADO (CREAR Y EDITAR) ---
+if (isset($_POST['accion_empleado'])) {
+    if ($_POST['accion_empleado'] == 'crear') {
+        try {
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO empleados (cedula, nombre_completo) VALUES (?, ?)");
+            $stmt->execute([$_POST['cedula'], $_POST['nombre']]);
+            $emp_id = $pdo->lastInsertId();
+            
+            // Verificamos si la tabla contratos existe antes de insertar
+            $pdo->exec("CREATE TABLE IF NOT EXISTS contratos (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                empleado_id INT,
+                salario_base DECIMAL(15,2),
+                aux_movilizacion DECIMAL(15,2) DEFAULT 0,
+                aux_mov_nocturno DECIMAL(15,2) DEFAULT 0,
+                fecha_inicio DATE,
+                activo TINYINT DEFAULT 1
+            )");
+
+            $stmt_c = $pdo->prepare("INSERT INTO contratos (empleado_id, salario_base, aux_movilizacion, aux_mov_nocturno, fecha_inicio, activo) VALUES (?, ?, ?, ?, ?, 1)");
+            $stmt_c->execute([$emp_id, $_POST['salario'], $_POST['aux_mov'] ?? 0, $_POST['aux_mov_noct'] ?? 0, date('Y-m-d')]);
+            $pdo->commit();
+            $mensaje = "Empleado registrado con éxito.";
+        } catch (Exception $e) { $pdo->rollBack(); $mensaje = "Error: " . $e->getMessage(); }
+    } 
+    elseif ($_POST['accion_empleado'] == 'editar') {
+        try {
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("UPDATE empleados SET cedula = ?, nombre_completo = ? WHERE id = ?");
+            $stmt->execute([$_POST['cedula'], $_POST['nombre'], $_POST['id_empleado']]);
+            
+            $stmt_c = $pdo->prepare("UPDATE contratos SET salario_base = ?, aux_movilizacion = ?, aux_mov_nocturno = ? WHERE empleado_id = ? AND activo = 1");
+            $stmt_c->execute([$_POST['salario'], $_POST['aux_mov'], $_POST['aux_mov_noct'], $_POST['id_empleado']]);
+            
+            $pdo->commit();
+            $mensaje = "Datos de empleado actualizados.";
+        } catch (Exception $e) { $pdo->rollBack(); $mensaje = "Error al editar: " . $e->getMessage(); }
+    }
+}
+
+// Carga final de datos para la vista
+$empleados = $pdo->query("SELECT e.*, c.salario_base, c.aux_movilizacion, c.aux_mov_nocturno FROM empleados e LEFT JOIN contratos c ON e.id = c.empleado_id WHERE c.activo = 1 OR c.activo IS NULL ORDER BY e.nombre_completo ASC")->fetchAll();
+$ley_actual = $pdo->query("SELECT * FROM config_ley ORDER BY $col_anio DESC LIMIT 1")->fetch();
+$festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll();
 ?>
 <!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Configuración Maestra - Resiliente</title>
+    <title>Configuración - Nómina</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');
-        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f3f4f6; }
+        .modal { transition: opacity 0.25s ease; }
+        body.modal-active { overflow: hidden; }
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
     </style>
 </head>
-<body class="p-4 md:p-10">
+<body class="bg-gray-50 min-h-screen pb-12">
 
-    <div class="max-w-7xl mx-auto">
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4">
-            <div>
-                <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight">Configuración <span class="text-indigo-600">Legal</span></h1>
-                <p class="text-slate-500 font-medium">Gestión de periodos de ley y planta de personal.</p>
+    <nav class="bg-slate-900 p-4 shadow-xl text-white mb-6">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-indigo-400">NOMINA <span class="text-white font-light">| Configuración</span></h1>
+            <div class="flex space-x-4">
+                <a href="asistencia.php" class="hover:text-indigo-400">Asistencia</a>
+                <a href="nomina.php" class="hover:text-indigo-400">Nómina</a>
+                <a href="index.php" class="bg-indigo-600 px-4 py-2 rounded-lg text-sm font-bold">Inicio</a>
             </div>
-            <div class="flex gap-2">
-                <form method="POST"><button type="submit" name="reparar_db" class="bg-white border border-slate-300 p-3 rounded-xl hover:bg-slate-50 transition-all"><i class="fas fa-tools"></i></button></form>
-                <a href="index.php" class="bg-slate-900 text-white px-6 py-3 rounded-xl font-bold hover:bg-slate-800 transition-all">Dashboard</a>
+        </div>
+    </nav>
+
+    <div class="container mx-auto px-4">
+        <?php if($mensaje): ?>
+            <div class="bg-emerald-100 border-l-4 border-emerald-500 p-4 mb-6 shadow-sm flex justify-between items-center">
+                <span class="text-emerald-800 font-medium"><i class="fas fa-check-circle mr-2"></i> <?= htmlspecialchars($mensaje) ?></span>
+                <button onclick="this.parentElement.remove()" class="text-emerald-400 text-2xl">&times;</button>
             </div>
-        </header>
+        <?php endif; ?>
 
-        <?= $mensaje ?>
-
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
             
-            <!-- PERIODOS DE LEY -->
-            <div class="lg:col-span-4">
-                <div class="bg-white rounded-3xl shadow-sm border border-slate-200 p-6">
-                    <div class="flex justify-between items-center mb-6">
-                        <h2 class="text-xl font-bold">Historial de Ley</h2>
-                        <button onclick="document.getElementById('modalLey').style.display='flex'" class="text-indigo-600 font-bold text-sm hover:underline">+ Nuevo</button>
+            <!-- PANEL LEGAL Y FESTIVOS -->
+            <div class="space-y-6">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="bg-slate-800 p-4 text-white font-bold">
+                        <i class="fas fa-percent mr-2 text-indigo-400"></i> Parámetros Legales
                     </div>
-                    <div class="space-y-4">
-                        <?php if(empty($periodos)): ?>
-                            <p class="text-slate-400 italic text-sm text-center py-10">No hay periodos configurados.</p>
-                        <?php endif; ?>
-                        <?php foreach($periodos as $p): ?>
-                        <div class="p-4 rounded-2xl border border-slate-100 bg-slate-50/50">
-                            <div class="flex justify-between text-[10px] font-black text-indigo-500 uppercase mb-2">
-                                <span><?= $p['fecha_inicio'] ?></span>
-                                <span><?= $p['horas_semanales'] ?> Horas</span>
+                    <form method="POST" class="p-4 space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Año</label>
+                                <input type="number" name="anio_val" value="<?= $ley_actual[$col_anio] ?? date('Y') ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
                             </div>
-                            <h4 class="font-bold text-slate-800"><?= htmlspecialchars($p['nombre_periodo']) ?></h4>
-                            <div class="flex gap-4 mt-2 text-xs font-semibold text-slate-500">
-                                <span>SMLV: $<?= number_format($p['valor_smlv'],0) ?></span>
-                                <span>Transp: $<?= number_format($p['subsidio_transporte'],0) ?></span>
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">SMLV</label>
+                                <input type="number" name="smlv" value="<?= $ley_actual['smlv'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
                             </div>
+                        </div>
+                        <div class="space-y-2 border-t pt-2">
+                            <div class="flex justify-between text-xs items-center text-slate-600">
+                                <span>Recargo Nocturno (%)</span>
+                                <input type="number" step="0.1" name="r_noc" value="<?= $ley_actual['recargo_nocturno'] ?? 35 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                            <div class="flex justify-between text-xs items-center text-slate-600">
+                                <span>Recargo Festivo (%)</span>
+                                <input type="number" step="0.1" name="r_fes" value="<?= $ley_actual['recargo_festivo'] ?? 75 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                            <div class="flex justify-between text-xs items-center text-slate-600">
+                                <span>Festivo Nocturno (%)</span>
+                                <input type="number" step="0.1" name="r_fes_noc" value="<?= $ley_actual['recargo_festivo_nocturno'] ?? 110 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                        </div>
+                        <input type="hidden" name="salud" value="<?= $ley_actual['salud_empleado'] ?? 4 ?>">
+                        <input type="hidden" name="pension" value="<?= $ley_actual['pension_empleado'] ?? 4 ?>">
+                        <input type="hidden" name="aux_t" value="<?= $ley_actual['aux_transporte'] ?? 0 ?>">
+                        <button type="submit" name="guardar_ley" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">
+                            Actualizar Ley
+                        </button>
+                    </form>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="bg-indigo-600 p-4 text-white font-bold flex justify-between items-center">
+                        <span><i class="fas fa-calendar-alt mr-2"></i> Festivos</span>
+                        <form method="POST" onsubmit="return confirm('¿Sincronizar base de datos?')">
+                            <button type="submit" name="reparar_db" class="text-[9px] bg-white/20 px-2 py-1 rounded hover:bg-white/30 uppercase">Sincronizar</button>
+                        </form>
+                    </div>
+                    
+                    <div class="p-4 bg-indigo-50 border-b">
+                        <form method="POST" enctype="multipart/form-data" class="space-y-2">
+                            <label class="text-[10px] font-bold text-indigo-400 uppercase block">Carga Masiva (CSV)</label>
+                            <div class="flex items-center space-x-2">
+                                <input type="file" name="csv_festivos" accept=".csv" class="text-[10px] flex-1">
+                                <button type="submit" class="bg-indigo-600 text-white px-2 py-1 rounded text-[10px] font-bold uppercase">Subir</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="max-h-80 overflow-y-auto divide-y divide-slate-50">
+                        <?php foreach($festivos as $f): ?>
+                        <div class="flex justify-between items-center p-3 hover:bg-slate-50">
+                            <div class="text-sm">
+                                <div class="font-bold text-slate-700"><?= $f['fecha'] ?></div>
+                                <div class="text-[11px] text-slate-500 uppercase"><?= htmlspecialchars($f['descripcion']) ?></div>
+                            </div>
+                            <a href="configuracion.php?del_festivo=<?= $f['id'] ?>" 
+                               onclick="return confirm('¿Eliminar festivo?')"
+                               class="text-slate-300 hover:text-red-500 p-2">
+                                <i class="fas fa-trash-alt"></i>
+                            </a>
                         </div>
                         <?php endforeach; ?>
                     </div>
                 </div>
             </div>
 
-            <!-- LISTADO DE EMPLEADOS -->
-            <div class="lg:col-span-8">
-                <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/30">
-                        <h2 class="text-xl font-bold">Empleados y Contratos</h2>
-                        <button onclick="prepararCrear()" class="bg-indigo-600 text-white px-5 py-2 rounded-xl font-bold text-sm">Nuevo Ingreso</button>
+            <!-- COLUMNA EMPLEADOS -->
+            <div class="lg:col-span-2 space-y-6">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-4 bg-slate-50 border-b font-bold text-slate-700">
+                        <i class="fas fa-user-plus mr-2 text-indigo-500"></i> Registro de Empleado
                     </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left">
-                            <thead class="bg-slate-50/50 text-[10px] uppercase font-black text-slate-400">
-                                <tr>
-                                    <th class="px-6 py-4">Empleado</th>
-                                    <th class="px-6 py-4">Salario</th>
-                                    <th class="px-6 py-4">Tipo</th>
-                                    <th class="px-6 py-4"></th>
-                                </tr>
-                            </thead>
-                            <tbody class="divide-y divide-slate-100">
-                                <?php foreach($empleados as $e): ?>
-                                <tr class="hover:bg-slate-50/50 transition-all">
-                                    <td class="px-6 py-4">
-                                        <p class="font-bold text-slate-800"><?= htmlspecialchars($e['nombre_completo']) ?></p>
-                                        <p class="text-xs text-slate-400 font-medium">C.C. <?= $e['cedula'] ?></p>
-                                    </td>
-                                    <td class="px-6 py-4 font-bold text-slate-700">$<?= number_format($e['salario_base'],0) ?></td>
-                                    <td class="px-6 py-4">
-                                        <span class="text-[10px] font-bold uppercase px-3 py-1 rounded-full <?= $e['es_direccion_confianza'] ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600' ?>">
-                                            <?= $e['es_direccion_confianza'] ? 'Confianza' : 'Operativo' ?>
-                                        </span>
-                                    </td>
-                                    <td class="px-6 py-4 text-right">
-                                        <button onclick='abrirModalEditar(<?= json_encode($e) ?>)' class="text-slate-300 hover:text-indigo-600 transition-all"><i class="fas fa-edit"></i></button>
-                                    </td>
-                                </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
+                    <form method="POST" class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <input type="hidden" name="accion_empleado" value="crear">
+                        <div class="md:col-span-2">
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre Completo</label>
+                            <input type="text" name="nombre" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Cédula</label>
+                            <input type="text" name="cedula" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Salario Base</label>
+                            <input type="number" name="salario" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div class="lg:col-span-4 flex justify-end">
+                            <button type="submit" class="bg-slate-900 text-white px-6 py-2 rounded-lg font-bold hover:bg-black transition">
+                                <i class="fas fa-save mr-2"></i> Guardar Nuevo
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <table class="w-full text-left">
+                        <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-400 border-b">
+                            <tr>
+                                <th class="px-6 py-3">Colaborador</th>
+                                <th class="px-6 py-3">Salario</th>
+                                <th class="px-6 py-3 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <?php foreach($empleados as $e): ?>
+                            <tr class="text-sm hover:bg-slate-50 transition">
+                                <td class="px-6 py-4">
+                                    <div class="font-bold text-slate-700"><?= htmlspecialchars($e['nombre_completo']) ?></div>
+                                    <div class="text-[10px] text-slate-400">CC: <?= $e['cedula'] ?></div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <div class="font-medium">$<?= number_format($e['salario_base'], 0) ?></div>
+                                </td>
+                                <td class="px-6 py-4 text-center">
+                                    <button onclick='abrirModalEditar(<?= json_encode($e) ?>)' 
+                                            class="text-indigo-600 hover:bg-indigo-100 w-8 h-8 rounded-full inline-flex items-center justify-center">
+                                        <i class="fas fa-edit"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- MODAL EMPLEADO -->
-    <div id="modalEmp" style="display:none" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-[2.5rem] w-full max-w-xl p-8 shadow-2xl">
-            <h2 id="modalEmpTitulo" class="text-2xl font-black mb-6">Nuevo Empleado</h2>
-            <form method="POST" class="space-y-4">
-                <input type="hidden" name="accion" id="formAccion" value="crear_empleado">
-                <input type="hidden" name="id" id="formId">
-                <div class="grid grid-cols-2 gap-4">
-                    <input type="text" name="nombre_completo" id="formNombre" placeholder="Nombre Completo" required class="col-span-2 bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none focus:ring-2 ring-indigo-500">
-                    <input type="text" name="cedula" id="formCedula" placeholder="Cédula" required class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                    <input type="date" name="fecha_ingreso" id="formFecha" required class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                    <input type="number" name="salario_base" id="formSalario" placeholder="Salario Base" required class="col-span-2 bg-indigo-50 p-4 rounded-2xl border border-indigo-100 font-bold text-indigo-700 outline-none">
-                </div>
-                <div class="bg-slate-50 p-4 rounded-2xl space-y-3">
-                    <label class="text-[10px] font-black uppercase text-slate-400">Extras Mensuales Fijos</label>
-                    <div class="grid grid-cols-2 gap-2">
-                        <input type="number" name="aux_mov" id="formMov" placeholder="Aux. Movilidad" class="p-3 rounded-xl border border-slate-200">
-                        <input type="number" name="aux_noc" id="formNoc" placeholder="Aux. Nocturno" class="p-3 rounded-xl border border-slate-200">
+    <!-- MODAL EDICIÓN -->
+    <div id="modalEditar" class="opacity-0 pointer-events-none fixed w-full h-full top-0 left-0 flex items-center justify-center z-50 modal">
+        <div class="modal-overlay absolute w-full h-full bg-slate-900 opacity-50"></div>
+        <div class="modal-container bg-white w-11/12 md:max-w-md mx-auto rounded-xl shadow-2xl z-50 overflow-y-auto">
+            <div class="modal-content py-6 text-left px-8">
+                <div class="flex justify-between items-center pb-3 border-b">
+                    <p class="text-xl font-bold">Editar Empleado</p>
+                    <div class="modal-close cursor-pointer" onclick="cerrarModal()">
+                        <i class="fas fa-times text-slate-400"></i>
                     </div>
-                    <label class="flex items-center gap-2 cursor-pointer mt-2">
-                        <input type="checkbox" name="confianza" id="formConfianza" class="w-5 h-5 accent-indigo-600">
-                        <span class="text-sm font-semibold text-slate-600 italic">Personal de Confianza (Sin HE)</span>
-                    </label>
                 </div>
-                <div class="flex gap-3">
-                    <button type="button" onclick="document.getElementById('modalEmp').style.display='none'" class="flex-1 py-4 font-bold text-slate-500">Cancelar</button>
-                    <button type="submit" class="flex-[2] bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-200">Guardar Información</button>
-                </div>
-            </form>
-        </div>
-    </div>
+                <form method="POST" class="mt-6 space-y-4">
+                    <input type="hidden" name="accion_empleado" value="editar">
+                    <input type="hidden" name="id_empleado" id="edit_id">
+                    
+                    <input type="text" name="nombre" id="edit_nombre" placeholder="Nombre" class="w-full border rounded p-3 text-sm" required>
+                    <input type="text" name="cedula" id="edit_cedula" placeholder="Cédula" class="w-full border rounded p-3 text-sm" required>
+                    <input type="number" name="salario" id="edit_salario" placeholder="Salario" class="w-full border rounded p-3 text-sm" required>
+                    
+                    <div class="grid grid-cols-2 gap-4">
+                        <input type="number" name="aux_mov" id="edit_aux_mov" placeholder="Aux. Mov" class="border rounded p-3 text-sm">
+                        <input type="number" name="aux_mov_noct" id="edit_aux_mov_noct" placeholder="Aux. Noct" class="border rounded p-3 text-sm">
+                    </div>
 
-    <!-- MODAL LEY -->
-    <div id="modalLey" style="display:none" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-        <div class="bg-white rounded-[2.5rem] w-full max-w-lg p-8 shadow-2xl">
-            <h2 class="text-2xl font-black mb-6">Nuevo Parámetro de Ley</h2>
-            <form method="POST" class="space-y-4">
-                <input type="hidden" name="accion" value="guardar_periodo">
-                <input type="text" name="nombre" placeholder="Descripción (Eje: Cambio Julio 2024)" required class="w-full bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                <div class="grid grid-cols-2 gap-4">
-                    <input type="date" name="inicio" required class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                    <input type="date" name="fin" class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                    <input type="number" name="smlv" placeholder="SMLV" required class="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 font-bold text-indigo-700 outline-none">
-                    <input type="number" name="subsidio" placeholder="Aux. Transporte" required class="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 font-bold text-indigo-700 outline-none">
-                    <input type="number" name="horas" value="47" placeholder="Horas Sem." required class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                    <input type="number" step="0.01" name="nocturno" value="35.00" class="bg-slate-50 p-4 rounded-2xl border border-slate-200 outline-none">
-                </div>
-                <div class="flex gap-3 mt-4">
-                    <button type="button" onclick="document.getElementById('modalLey').style.display='none'" class="flex-1 py-4 font-bold text-slate-500">Cerrar</button>
-                    <button type="submit" class="flex-[2] bg-slate-900 text-white py-4 rounded-2xl font-bold">Aplicar Parámetros</button>
-                </div>
-            </form>
+                    <div class="flex justify-end pt-6 space-x-3">
+                        <button type="button" onclick="cerrarModal()" class="px-4 py-2 text-slate-400 font-bold">Cerrar</button>
+                        <button type="submit" class="px-6 py-2 bg-indigo-600 text-white rounded-lg font-bold">Actualizar</button>
+                    </div>
+                </form>
+            </div>
         </div>
     </div>
 
     <script>
         function abrirModalEditar(e) {
-            document.getElementById('modalEmpTitulo').innerText = "Editar Colaborador";
-            document.getElementById('formAccion').value = "editar_empleado";
-            document.getElementById('formId').value = e.id;
-            document.getElementById('formNombre').value = e.nombre_completo;
-            document.getElementById('formCedula').value = e.cedula;
-            document.getElementById('formFecha').value = e.fecha_ingreso;
-            document.getElementById('formSalario').value = e.salario_base;
-            document.getElementById('formMov').value = e.aux_movilizacion_mensual;
-            document.getElementById('formNoc').value = e.aux_mov_nocturno_mensual;
-            document.getElementById('formConfianza').checked = (parseInt(e.es_direccion_confianza) === 1);
-            document.getElementById('modalEmp').style.display = 'flex';
+            document.getElementById('edit_id').value = e.id;
+            document.getElementById('edit_nombre').value = e.nombre_completo;
+            document.getElementById('edit_cedula').value = e.cedula;
+            document.getElementById('edit_salario').value = e.salario_base;
+            document.getElementById('edit_aux_mov').value = e.aux_movilizacion || 0;
+            document.getElementById('edit_aux_mov_noct').value = e.aux_mov_nocturno || 0;
+
+            const modal = document.getElementById('modalEditar');
+            modal.classList.remove('opacity-0', 'pointer-events-none');
+            document.body.classList.add('modal-active');
         }
 
-        function prepararCrear() {
-            document.getElementById('modalEmpTitulo').innerText = "Nuevo Empleado";
-            document.getElementById('formAccion').value = "crear_empleado";
-            document.getElementById('formId').value = "";
-            document.getElementById('formNombre').value = "";
-            document.getElementById('formCedula').value = "";
-            document.getElementById('formFecha').value = "";
-            document.getElementById('formSalario').value = "";
-            document.getElementById('formMov').value = "0";
-            document.getElementById('formNoc').value = "0";
-            document.getElementById('formConfianza').checked = false;
-            document.getElementById('modalEmp').style.display = 'flex';
+        function cerrarModal() {
+            const modal = document.getElementById('modalEditar');
+            modal.classList.add('opacity-0', 'pointer-events-none');
+            document.body.classList.remove('modal-active');
         }
     </script>
 </body>
