@@ -68,15 +68,19 @@ if (isset($_GET['eliminar_id'])) {
 $mensaje = "";
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['registrar'])) {
     $empleado_id = $_POST['empleado_id'];
-    $fecha_registro = $_POST['fecha_entrada']; // Se usa la fecha de entrada como referencia del registro
+    $fecha_registro = $_POST['fecha_entrada'];
     $hora_entrada_full = $_POST['fecha_entrada'] . ' ' . $_POST['hora_entrada'];
     $hora_salida_full = $_POST['fecha_salida'] . ' ' . $_POST['hora_salida'];
     $horas_descanso = floatval($_POST['horas_descanso'] ?? 1);
 
+    // NUEVO: Verificar si el día es especial (Domingo o Festivo) antes de guardar
+    $es_festivo_valor = esDiaEspecial($fecha_registro, $pdo) ? 1 : 0;
+
     $calculos = procesarTurno($hora_entrada_full, $hora_salida_full, $horas_descanso);
 
-    $sql = "INSERT INTO asistencia_diaria (empleado_id, fecha, hora_entrada, hora_salida, horas_diurnas, horas_nocturnas) 
-            VALUES (?, ?, ?, ?, ?, ?)";
+    // ACTUALIZADO: Se agrega la columna es_festivo al INSERT
+    $sql = "INSERT INTO asistencia_diaria (empleado_id, fecha, hora_entrada, hora_salida, horas_diurnas, horas_nocturnas, es_festivo) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
         $empleado_id, 
@@ -84,7 +88,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['registrar'])) {
         $hora_entrada_full, 
         $hora_salida_full, 
         $calculos['diurnas'], 
-        $calculos['nocturnas']
+        $calculos['nocturnas'],
+        $es_festivo_valor // Guardamos el 1 o 0 correspondiente
     ]);
 
     $mensaje = "Asistencia registrada correctamente.";
