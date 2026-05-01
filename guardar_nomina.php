@@ -1,7 +1,8 @@
 <?php
 /**
  * ARCHIVO: guardar_nomina.php
- * OBJETIVO: Procesar el guardado de la liquidación en el histórico y marcar asistencia como procesada.
+ * OBJETIVO: Procesar el guardado de la liquidación y actualizar la asistencia.
+ * REGLA DE ORO: Sincronización total con la base de datos u270613792_nomina_gemini.
  */
 
 // Configurar la zona horaria para Colombia
@@ -11,10 +12,10 @@ require_once 'config/db.php';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
-    // Verificamos que se haya enviado la acción de guardar
+    // ACCIÓN: GUARDAR NUEVA NÓMINA
     if (isset($_POST['accion']) && $_POST['accion'] === 'guardar') {
         try {
-            // 1. Recolección de datos del formulario (coincidiendo con los 'name' de nomina.php)
+            // 1. Recolección de datos desde el formulario de nomina.php
             $contrato_id        = $_POST['contrato_id'];
             $periodo_desde      = $_POST['periodo_desde'];
             $periodo_hasta      = $_POST['periodo_hasta'];
@@ -29,15 +30,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $deduccion_pension  = $_POST['deduccion_pension'] ?? 0;
             $neto_pagar         = $_POST['neto_pagar'];
 
-            // 2. Creación del Snapshot (Requerido por la tabla historico_nomina)
+            // 2. Creación del Snapshot JSON (Obligatorio en tu BD)
             $snapshot = json_encode([
                 "fecha_proceso" => date('Y-m-d H:i:s'),
-                "nota" => "Liquidación automatizada v2.0 - Cargo de Confianza",
-                "ip" => $_SERVER['REMOTE_ADDR']
+                "nota" => "Liquidación procesada - Sistema 2026",
+                "metodo" => "Automático via nomina.php"
             ]);
 
-            // 3. Preparar el SQL de Inserción
-            // Nota: Se usan los nombres de columna exactos de tu tabla: valor_salario_pagado, etc.
+            // 3. Preparar el SQL de Inserción con los nombres de columna reales de tu SQL
             $sql = "INSERT INTO historico_nomina (
                         contrato_id, 
                         periodo_desde, 
@@ -74,8 +74,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $snapshot
             ]);
 
-            // 4. Marcar asistencia diaria como 'Procesada'
-            // Esto evita que las mismas horas se cobren dos veces en el futuro
+            // 4. Marcar asistencia diaria como 'Procesada' (UPDATE)
+            // Esto asegura que estas horas no se vuelvan a cobrar.
             $update_sql = "UPDATE asistencia_diaria 
                            SET procesado_en_nomina = 1 
                            WHERE empleado_id = (SELECT empleado_id FROM contratos WHERE id = ?) 
@@ -84,22 +84,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt_update = $pdo->prepare($update_sql);
             $stmt_update->execute([$contrato_id, $periodo_desde, $periodo_hasta]);
 
-            // 5. Redirección con éxito
+            // 5. Redireccionar de vuelta a nomina.php con mensaje de éxito
             header("Location: nomina.php?status=success");
             exit();
 
         } catch (Exception $e) {
-            // Si hay un error, lo mostramos para evitar la pantalla en blanco
-            echo "<div style='font-family:sans-serif; padding:20px; border:2px solid red; border-radius:10px; background:#fff5f5;'>";
-            echo "<h2 style='color:red;'>Error al procesar el pago</h2>";
-            echo "<p>Detalle técnico: " . $e->getMessage() . "</p>";
-            echo "<a href='nomina.php'>Volver a intentar</a>";
-            echo "</div>";
-            exit();
+            // Si hay un error, lo mostramos para depurar (esto evita la página en blanco)
+            die("<h3>Error al guardar la nómina:</h3>" . $e->getMessage());
         }
     }
 }
 
-// Si se intenta acceder por URL sin enviar datos
+// ACCIÓN: ELIMINAR NÓMINA (Soportado por tu tabla de historial)
+if (isset($_GET['eliminar_id'])) {
+    try {
+        $id = $_GET['eliminar_id'];
+
+        // Liberar las horas de asistencia antes de borrar el registro
+        $stmt_info = $pdo->prepare("SELECT contrato_id, periodo_desde, periodo_hasta FROM historico_nomina WHERE id = ?");
+        $stmt_info->execute([$id]);
+        $info = $stmt_info->fetch();
+
+        if ($info) {
+            $liberar = $pdo->prepare("UPDATE asistencia_diaria SET procesado_en_nomina = 0 
+                                     WHERE empleado_id = (SELECT empleado_id FROM contratos WHERE id = ?) 
+                                     AND fecha BETWEEN ? AND ?");
+            $liberar->execute([$info['contrato_id'], $info['periodo_desde'], $info['periodo_hasta']]);
+        }
+
+        $stmt_del = $pdo->prepare("DELETE FROM historico_nomina WHERE id = ?");
+        $stmt_del->execute([$id]);
+
+        header("Location: historial_pagos.php?status=deleted");
+        exit();
+
+    } catch (Exception $e) {
+        die("Error al eliminar: " . $e->getMessage());
+    }
+}
+
+// Fallback: Si se accede sin POST ni GET válido
 header("Location: nomina.php");
 exit();
