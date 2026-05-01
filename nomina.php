@@ -202,13 +202,25 @@ $empleados = $pdo->query("SELECT id, nombre_completo FROM empleados ORDER BY nom
                         </div>
 
                         <div class="p-8 bg-slate-50 border-t flex gap-4">
-                            <form action="guardar_nomina.php" method="POST" class="flex-1">
-                                <input type="hidden" name="contrato_id" value="<?= $liquidacion['contrato_id'] ?>">
-                                <input type="hidden" name="neto_pagar" value="<?= $liquidacion['neto'] ?>">
-                                <button type="submit" class="w-full bg-emerald-500 text-white py-4 rounded-2xl font-black text-lg shadow-xl hover:bg-emerald-600 transition flex items-center justify-center gap-3">
-                                    <i class="fas fa-check-double"></i> FINALIZAR PAGO
-                                </button>
-                            </form>
+                            <form action="guardar_nomina.php" method="POST">
+    <input type="hidden" name="contrato_id" value="<?= $liquidacion['contrato_id'] ?>">
+    <input type="hidden" name="periodo_desde" value="<?= $desde ?>">
+    <input type="hidden" name="periodo_hasta" value="<?= $hasta ?>">
+    <input type="hidden" name="dias_liquidados" value="15">
+    <input type="hidden" name="salario_pagado" value="<?= $liquidacion['salario_quincena'] ?>">
+    <input type="hidden" name="recargos_nocturnos" value="<?= $liquidacion['rn_val'] ?>">
+    <input type="hidden" name="recargos_festivos" value="<?= $liquidacion['rf_val'] ?>">
+    <input type="hidden" name="aux_transporte" value="<?= $liquidacion['aux_trans'] ?>">
+    <input type="hidden" name="aux_movilizacion" value="<?= $liquidacion['aux_mov'] ?>">
+    <input type="hidden" name="aux_mov_nocturno" value="<?= $liquidacion['aux_noc'] ?>">
+    <input type="hidden" name="deduccion_salud" value="<?= $liquidacion['salud'] ?>">
+    <input type="hidden" name="deduccion_pension" value="<?= $liquidacion['pension'] ?>">
+    <input type="hidden" name="neto_pagar" value="<?= $liquidacion['neto'] ?>">
+    
+    <button type="submit" class="w-full bg-emerald-600 text-white py-4 rounded-xl font-black text-xl shadow-lg hover:bg-emerald-700 transition">
+        <i class="fas fa-save mr-2"></i> CONFIRMAR Y GUARDAR EN HISTORIAL
+    </button>
+</form>
                         </div>
                     </div>
                 <?php endif; ?>
