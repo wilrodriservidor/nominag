@@ -1,4 +1,7 @@
 <?php
+// Configurar la zona horaria para Colombia
+date_default_timezone_set('America/Bogota');
+
 // Incluir configuración de base de datos
 require_once 'config/db.php';
 
