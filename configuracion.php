@@ -348,12 +348,7 @@ $conceptos = $pdo->query("
     ORDER BY codigo ASC
 ")->fetchAll(PDO::FETCH_ASSOC);
 ?>
-```
 
-# HTML COMPLETO PARA LOS MÓDULOS DE CONFIGURACIÓN
-
-```php
-<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
