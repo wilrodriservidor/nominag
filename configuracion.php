@@ -16,7 +16,7 @@ function obtenerColumnaAnio($pdo) {
         $columnas = $rs->fetchAll(PDO::FETCH_COLUMN);
         if (in_array('anio', $columnas)) return 'anio';
         if (in_array('vigencia', $columnas)) return 'vigencia';
-        return 'id'; // Por defecto usamos ID para el orden si no hay columna de tiempo clara
+        return 'id'; 
     } catch (Exception $e) {
         return 'id';
     }
@@ -24,7 +24,7 @@ function obtenerColumnaAnio($pdo) {
 
 $col_anio = obtenerColumnaAnio($pdo);
 
-// --- LÓGICA DE REPARACIÓN ---
+// --- LÓGICA DE REPARACIÓN (Mantenida de tu config original) ---
 if (isset($_POST['reparar_db'])) {
     try {
         $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_nocturno DECIMAL(5,2) DEFAULT 35.00");
@@ -38,7 +38,7 @@ if (isset($_POST['reparar_db'])) {
 // --- CARGA DE CSV ---
 if (isset($_FILES['csv_festivos']) && $_FILES['csv_festivos']['size'] > 0) {
     $handle = fopen($_FILES['csv_festivos']['tmp_name'], "r");
-    fgetcsv($handle); // saltar cabecera
+    fgetcsv($handle); 
     $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (descripcion, fecha) VALUES (?, ?)");
     while (($datos = fgetcsv($handle, 1000, ",")) !== FALSE) {
         if (count($datos) >= 2) $stmt->execute([trim($datos[0]), trim($datos[1])]);
@@ -63,30 +63,29 @@ if (isset($_POST['agregar_festivo'])) {
     $mensaje = "Festivo agregado.";
 }
 
-// --- GUARDAR PARÁMETROS LEY ---
+// --- GUARDAR NUEVA PARAMETRIZACIÓN (HISTÓRICO REFORMA 2026) ---
 if (isset($_POST['guardar_ley'])) {
-    // Ajustado a las columnas exactas del SQL: smmlv, aux_transporte_ley, porc_salud_trabajador, porc_pension_trabajador
-    $stmt = $pdo->prepare("INSERT INTO config_ley (fecha_inicio, smmlv, aux_transporte_ley, porc_salud_trabajador, porc_pension_trabajador, recargo_nocturno, recargo_festivo, recargo_festivo_nocturno) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    
-    // Convertimos porcentajes enteros a decimales para la DB (ej: 4 a 0.04)
-    $salud_dec = $_POST['salud'] / 100;
-    $pension_dec = $_POST['pension'] / 100;
-    $fecha_ini = $_POST['anio_val'] . "-01-01";
+    try {
+        $stmt = $pdo->prepare("INSERT INTO config_ley (fecha_inicio, smmlv, aux_transporte_ley, porc_salud_trabajador, porc_pension_trabajador, recargo_nocturno, recargo_festivo, recargo_festivo_nocturno) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        
+        $salud_dec = $_POST['salud'] / 100;
+        $pension_dec = $_POST['pension'] / 100;
 
-    $stmt->execute([
-        $fecha_ini, 
-        $_POST['smlv'], 
-        $_POST['aux_t'], 
-        $salud_dec, 
-        $pension_dec, 
-        $_POST['r_noc'], 
-        $_POST['r_fes'], 
-        $_POST['r_fes_noc']
-    ]);
-    $mensaje = "Parámetros actualizados.";
+        $stmt->execute([
+            $_POST['fecha_ini'], 
+            $_POST['smlv'], 
+            $_POST['aux_t'], 
+            $salud_dec, 
+            $pension_dec, 
+            $_POST['r_noc'], 
+            $_POST['r_fes'], 
+            $_POST['r_fes_noc']
+        ]);
+        $mensaje = "Nueva vigencia registrada en el histórico.";
+    } catch (Exception $e) { $mensaje = "Error: " . $e->getMessage(); }
 }
 
-// --- ACCIONES DE EMPLEADO ---
+// --- ACCIONES DE EMPLEADO (Lógica completa de tu archivo original) ---
 if (isset($_POST['accion_empleado'])) {
     if ($_POST['accion_empleado'] == 'crear') {
         try {
@@ -113,9 +112,11 @@ if (isset($_POST['accion_empleado'])) {
     }
 }
 
+// Consultas para la vista
 $empleados = $pdo->query("SELECT e.*, c.salario_base, c.aux_movilizacion, c.aux_mov_nocturno FROM empleados e LEFT JOIN contratos c ON e.id = c.empleado_id WHERE c.activo = 1 OR c.activo IS NULL ORDER BY e.nombre_completo ASC")->fetchAll();
-$ley_actual = $pdo->query("SELECT * FROM config_ley ORDER BY id DESC LIMIT 1")->fetch();
 $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll();
+$historico_ley = $pdo->query("SELECT * FROM config_ley ORDER BY fecha_inicio DESC, id DESC")->fetchAll();
+$ley_actual = $historico_ley[0] ?? null;
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -138,7 +139,7 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
             <div class="flex space-x-4">
                 <a href="asistencia.php" class="hover:text-indigo-400">Asistencia</a>
                 <a href="nomina.php" class="hover:text-indigo-400">Nómina</a>
-                <a href="index.php" class="bg-indigo-600 px-4 py-2 rounded-lg text-sm font-bold">Inicio</a>
+                <a href="index.php" class="bg-indigo-600 px-4 py-2 rounded-lg text-sm font-bold hover:bg-indigo-700 transition">Inicio</a>
             </div>
         </div>
     </nav>
@@ -151,43 +152,45 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
             </div>
         <?php endif; ?>
 
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
             
-            <div class="space-y-6">
+            <div class="lg:col-span-4 space-y-6">
+                
                 <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div class="bg-slate-800 p-4 text-white font-bold">
-                        <i class="fas fa-percent mr-2 text-indigo-400"></i> Parámetros Legales
+                    <div class="bg-slate-800 p-4 text-white font-bold flex justify-between items-center">
+                        <span><i class="fas fa-balance-scale mr-2 text-indigo-400"></i> Nueva Vigencia</span>
+                        <span class="text-[10px] bg-white/10 px-2 py-1 rounded">REFORMA 2026</span>
                     </div>
                     <form method="POST" class="p-4 space-y-4">
+                        <div>
+                            <label class="block text-[10px] font-bold text-slate-400 uppercase italic">Fecha de Inicio de Vigencia</label>
+                            <input type="date" name="fecha_ini" value="<?= date('Y-m-d') ?>" class="w-full bg-slate-50 border-2 border-indigo-50 rounded p-2 text-sm font-bold focus:border-indigo-500 outline-none" required>
+                        </div>
+
                         <div class="grid grid-cols-2 gap-4">
                             <div>
-                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Año Vigencia</label>
-                                <input type="number" name="anio_val" value="<?= isset($ley_actual['fecha_inicio']) ? substr($ley_actual['fecha_inicio'], 0, 4) : date('Y') ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">SMMLV</label>
+                                <input type="number" name="smlv" value="<?= $ley_actual['smmlv'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm" required>
                             </div>
                             <div>
-                                <label class="block text-[10px] font-bold text-slate-400 uppercase">SMLV</label>
-                                <input type="number" name="smlv" value="<?= $ley_actual['smmlv'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Aux. Transp.</label>
+                                <input type="number" name="aux_t" value="<?= $ley_actual['aux_transporte_ley'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm" required>
                             </div>
                         </div>
 
                         <div class="space-y-2 border-t pt-2">
-                            <div>
-                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Auxilio Transporte</label>
-                                <input type="number" name="aux_t" value="<?= $ley_actual['aux_transporte_ley'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
-                            </div>
-                            
                             <div class="grid grid-cols-2 gap-4">
                                 <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Salud Trab. (%)</label>
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Salud Trab (%)</label>
                                     <input type="number" step="0.01" name="salud" value="<?= ($ley_actual['porc_salud_trabajador'] ?? 0.04) * 100 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
                                 </div>
                                 <div>
-                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Pensión Trab. (%)</label>
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Pensión Trab (%)</label>
                                     <input type="number" step="0.01" name="pension" value="<?= ($ley_actual['porc_pension_trabajador'] ?? 0.04) * 100 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
                                 </div>
                             </div>
 
-                            <div class="flex justify-between text-xs items-center text-slate-600 pt-2 border-t">
+                            <div class="flex justify-between text-xs items-center text-slate-600 pt-2">
                                 <span>Recargo Nocturno (%)</span>
                                 <input type="number" step="0.1" name="r_noc" value="<?= $ley_actual['recargo_nocturno'] ?? 35 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
                             </div>
@@ -201,8 +204,8 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                             </div>
                         </div>
 
-                        <button type="submit" name="guardar_ley" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">
-                            Actualizar Ley
+                        <button type="submit" name="guardar_ley" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg">
+                            Registrar en Histórico
                         </button>
                     </form>
                 </div>
@@ -225,16 +228,14 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                         </form>
                     </div>
 
-                    <div class="max-h-80 overflow-y-auto divide-y divide-slate-50">
+                    <div class="max-h-60 overflow-y-auto divide-y divide-slate-50">
                         <?php foreach($festivos as $f): ?>
                         <div class="flex justify-between items-center p-3 hover:bg-slate-50 transition">
                             <div class="text-sm">
                                 <div class="font-bold text-slate-700"><?= $f['fecha'] ?></div>
                                 <div class="text-[11px] text-slate-500 uppercase"><?= htmlspecialchars($f['descripcion']) ?></div>
                             </div>
-                            <a href="configuracion.php?del_festivo=<?= $f['id'] ?? $f['fecha'] ?>" 
-                               onclick="return confirm('¿Eliminar festivo?')"
-                               class="text-slate-300 hover:text-red-500 transition p-2">
+                            <a href="configuracion.php?del_festivo=<?= $f['id'] ?>" class="text-slate-300 hover:text-red-500 transition p-2">
                                 <i class="fas fa-trash-alt"></i>
                             </a>
                         </div>
@@ -243,12 +244,51 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                 </div>
             </div>
 
-            <div class="lg:col-span-2 space-y-6">
+            <div class="lg:col-span-8 space-y-6">
+                
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="bg-slate-50 p-4 border-b">
+                        <h3 class="font-bold text-slate-700 uppercase text-xs tracking-wider">Historial de Vigencias Laborales</h3>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-100 text-[10px] uppercase text-slate-500 font-bold">
+                                <tr>
+                                    <th class="px-4 py-3">Inicio</th>
+                                    <th class="px-4 py-3">SMLV / Aux</th>
+                                    <th class="px-4 py-3">Salud/Pen</th>
+                                    <th class="px-4 py-3">Noc/Fes/FN</th>
+                                    <th class="px-4 py-3 text-center">Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <?php foreach($historico_ley as $index => $h): ?>
+                                <tr class="text-xs hover:bg-slate-50 transition <?= $index === 0 ? 'bg-indigo-50/50' : '' ?>">
+                                    <td class="px-4 py-4 font-bold text-indigo-600"><?= $h['fecha_inicio'] ?></td>
+                                    <td class="px-4 py-4">$<?= number_format($h['smmlv'],0) ?> / $<?= number_format($h['aux_transporte_ley'],0) ?></td>
+                                    <td class="px-4 py-4"><?= ($h['porc_salud_trabajador']*100) ?>% / <?= ($h['porc_pension_trabajador']*100) ?>%</td>
+                                    <td class="px-4 py-4">
+                                        <span class="bg-slate-100 px-1 rounded text-slate-600"><?= $h['recargo_nocturno'] ?>%</span>
+                                        <span class="bg-slate-100 px-1 rounded text-slate-600"><?= $h['recargo_festivo'] ?>%</span>
+                                        <span class="bg-slate-100 px-1 rounded text-slate-600"><?= $h['recargo_festivo_nocturno'] ?>%</span>
+                                    </td>
+                                    <td class="px-4 py-4 text-center">
+                                        <?= $index === 0 ? '<span class="text-emerald-600 font-bold uppercase text-[9px]">Vigente</span>' : '<span class="text-slate-400 uppercase text-[9px]">Anterior</span>' ?>
+                                    </td>
+                                </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                     <div class="p-4 bg-slate-50 border-b font-bold text-slate-700 flex justify-between items-center">
-                        <span><i class="fas fa-user-plus mr-2 text-indigo-500"></i> Nuevo Empleado</span>
+                        <span><i class="fas fa-users mr-2 text-indigo-500"></i> Gestión de Personal</span>
+                        <button onclick="document.getElementById('form_nuevo').classList.toggle('hidden')" class="bg-indigo-600 text-white px-3 py-1 rounded text-xs">Nuevo +</button>
                     </div>
-                    <form method="POST" class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    
+                    <form id="form_nuevo" method="POST" class="hidden p-6 bg-indigo-50/50 border-b grid grid-cols-1 md:grid-cols-4 gap-4 animate-fadeIn">
                         <input type="hidden" name="accion_empleado" value="crear">
                         <div class="md:col-span-2">
                             <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre Completo</label>
@@ -262,21 +302,17 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                             <label class="text-[10px] font-bold text-slate-400 uppercase">Salario Base</label>
                             <input type="number" name="salario" class="w-full border rounded p-2 text-sm" required>
                         </div>
-                        <div class="lg:col-span-4 flex justify-end">
-                            <button type="submit" class="bg-slate-900 text-white px-6 py-2 rounded-lg font-bold hover:bg-black transition flex items-center">
-                                <i class="fas fa-save mr-2"></i> Guardar Empleado
-                            </button>
+                        <div class="md:col-span-4 flex justify-end">
+                            <button type="submit" class="bg-slate-900 text-white px-6 py-2 rounded-lg font-bold hover:bg-black transition">Guardar Empleado</button>
                         </div>
                     </form>
-                </div>
 
-                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
                     <table class="w-full text-left border-collapse">
                         <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-400 border-b">
                             <tr>
-                                <th class="px-6 py-3">Empleado / Cédula</th>
-                                <th class="px-6 py-3">Salario Base</th>
-                                <th class="px-6 py-3 text-center">Gestión</th>
+                                <th class="px-6 py-3">Empleado</th>
+                                <th class="px-6 py-3">Salario</th>
+                                <th class="px-6 py-3 text-center">Acciones</th>
                             </tr>
                         </thead>
                         <tbody class="divide-y divide-slate-100">
@@ -291,8 +327,7 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                                     <div class="text-[9px] text-slate-400">Aux: $<?= number_format($e['aux_movilizacion'] + $e['aux_mov_nocturno'], 0) ?></div>
                                 </td>
                                 <td class="px-6 py-4 text-center">
-                                    <button onclick='abrirModalEditar(<?= json_encode($e) ?>)' 
-                                            class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 hover:bg-indigo-600 hover:text-white transition shadow-sm">
+                                    <button onclick='abrirModalEditar(<?= json_encode($e) ?>)' class="w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 hover:bg-indigo-600 hover:text-white transition inline-flex items-center justify-center shadow-sm">
                                         <i class="fas fa-edit text-xs"></i>
                                     </button>
                                 </td>
@@ -307,19 +342,19 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
 
     <div id="modalEditar" class="opacity-0 pointer-events-none fixed w-full h-full top-0 left-0 flex items-center justify-center z-50 modal">
         <div class="modal-overlay absolute w-full h-full bg-slate-900 opacity-50"></div>
-        <div class="modal-container bg-white w-11/12 md:max-w-md mx-auto rounded-xl shadow-2xl z-50 overflow-y-auto border border-slate-100">
+        <div class="modal-container bg-white w-11/12 md:max-w-md mx-auto rounded-xl shadow-2xl z-50 overflow-y-auto">
             <div class="modal-content py-4 text-left px-6">
                 <div class="flex justify-between items-center pb-3 border-b">
                     <p class="text-lg font-bold text-slate-800">Editar Empleado</p>
-                    <div class="modal-close cursor-pointer z-50" onclick="cerrarModal()">
-                        <i class="fas fa-times text-slate-400 hover:text-red-500"></i>
+                    <div class="modal-close cursor-pointer" onclick="cerrarModal()">
+                        <i class="fas fa-times text-slate-400"></i>
                     </div>
                 </div>
                 <form method="POST" class="mt-4 space-y-4">
                     <input type="hidden" name="accion_empleado" value="editar">
                     <input type="hidden" name="id_empleado" id="edit_id">
                     <div>
-                        <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre Completo</label>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre</label>
                         <input type="text" name="nombre" id="edit_nombre" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
                     </div>
                     <div>
@@ -327,7 +362,7 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                         <input type="text" name="cedula" id="edit_cedula" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
                     </div>
                     <div>
-                        <label class="text-[10px] font-bold text-slate-400 uppercase">Salario Base</label>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase">Salario</label>
                         <input type="number" name="salario" id="edit_salario" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
                     </div>
                     <div class="grid grid-cols-2 gap-4">
@@ -341,8 +376,8 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
                         </div>
                     </div>
                     <div class="flex justify-end pt-4 space-x-3">
-                        <button type="button" onclick="cerrarModal()" class="px-4 py-2 bg-slate-100 text-slate-500 rounded-lg text-sm font-bold hover:bg-slate-200 transition">Cancelar</button>
-                        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-100">Guardar Cambios</button>
+                        <button type="button" onclick="cerrarModal()" class="px-4 py-2 bg-slate-100 text-slate-500 rounded-lg text-sm font-bold">Cancelar</button>
+                        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold shadow-lg shadow-indigo-100">Guardar</button>
                     </div>
                 </form>
             </div>
@@ -367,12 +402,6 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll()
             const modal = document.getElementById('modalEditar');
             modal.classList.add('opacity-0', 'pointer-events-none');
             document.body.classList.remove('modal-active');
-        }
-
-        window.onclick = function(event) {
-            if (event.target.classList.contains('modal-overlay')) {
-                cerrarModal();
-            }
         }
     </script>
 </body>
