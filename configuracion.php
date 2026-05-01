@@ -14,7 +14,7 @@ $mensaje = "";
 
 /**
  * FUNCIÓN PARA DETECTAR EL NOMBRE DE LA TABLA Y COLUMNAS REALES
- * Evita Error 500 si la estructura varía entre servidores.
+ * Evita Error 500 si la estructura varía entre servidores o versiones.
  */
 function obtenerEstructuraLey($pdo) {
     $tablas = ['config_ley', 'parametros_ley'];
@@ -22,7 +22,10 @@ function obtenerEstructuraLey($pdo) {
         $check = $pdo->query("SHOW TABLES LIKE '$t'")->rowCount();
         if ($check > 0) {
             $rs = $pdo->query("SHOW COLUMNS FROM $t");
-            return ['tabla' => $t, 'columnas' => $rs->fetchAll(PDO::FETCH_COLUMN)];
+            return [
+                'tabla' => $t, 
+                'columnas' => $rs->fetchAll(PDO::FETCH_COLUMN)
+            ];
         }
     }
     return null;
@@ -35,12 +38,16 @@ $tabla_ley = $estructura['tabla'] ?? null;
 if (isset($_POST['reparar_db'])) {
     try {
         if ($tabla_ley) {
+            // Asegurar que existan las columnas de recargos para evitar errores en nómina.php
             $pdo->exec("ALTER TABLE $tabla_ley ADD COLUMN IF NOT EXISTS recargo_nocturno DECIMAL(5,2) DEFAULT 35.00");
             $pdo->exec("ALTER TABLE $tabla_ley ADD COLUMN IF NOT EXISTS recargo_festivo DECIMAL(5,2) DEFAULT 75.00");
-            $mensaje = "<div class='bg-amber-100 text-amber-700 p-4 rounded-xl mb-6 border border-amber-200'>Estructura de tabla $tabla_ley actualizada.</div>";
+            $mensaje = "<div class='bg-amber-100 text-amber-700 p-4 rounded-xl mb-6 border border-amber-200 shadow-sm flex items-center gap-3'>
+                            <i class='fas fa-check-circle'></i>
+                            <span>Estructura de tabla <b>$tabla_ley</b> actualizada con columnas de recargo.</span>
+                        </div>";
         }
     } catch (Exception $e) {
-        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6'>Error al reparar: " . $e->getMessage() . "</div>";
+        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6 border border-red-200'>Error al reparar: " . $e->getMessage() . "</div>";
     }
 }
 
@@ -48,10 +55,17 @@ if (isset($_POST['reparar_db'])) {
 if (isset($_POST['crear_empleado'])) {
     try {
         $pdo->beginTransaction();
+        
+        // Insertar en empleados
         $stmt_emp = $pdo->prepare("INSERT INTO empleados (cedula, nombre_completo, fecha_ingreso) VALUES (?, ?, ?)");
-        $stmt_emp->execute([$_POST['cedula'], $_POST['nombre_completo'], $_POST['fecha_ingreso']]);
+        $stmt_emp->execute([
+            $_POST['cedula'], 
+            $_POST['nombre_completo'], 
+            $_POST['fecha_ingreso']
+        ]);
         $empleado_id = $pdo->lastInsertId();
 
+        // Insertar contrato activo
         $stmt_con = $pdo->prepare("
             INSERT INTO contratos (
                 empleado_id, salario_base, es_direccion_confianza, 
@@ -63,15 +77,19 @@ if (isset($_POST['crear_empleado'])) {
             $empleado_id,
             $_POST['salario_base'],
             isset($_POST['es_direccion_confianza']) ? 1 : 0,
-            $_POST['aux_movilizacion_mensual'] ?? 0,
-            $_POST['aux_mov_nocturno_mensual'] ?? 0,
+            $_POST['aux_movilizacion_mensual'] ?: 0,
+            $_POST['aux_mov_nocturno_mensual'] ?: 0,
             $_POST['fecha_ingreso']
         ]);
+
         $pdo->commit();
-        $mensaje = "<div class='bg-emerald-100 text-emerald-700 p-4 rounded-xl mb-6 shadow-sm border border-emerald-200'>¡Empleado y contrato creados con éxito!</div>";
+        $mensaje = "<div class='bg-emerald-100 text-emerald-700 p-4 rounded-xl mb-6 shadow-sm border border-emerald-200 flex items-center gap-3'>
+                        <i class='fas fa-user-plus'></i>
+                        <span>¡Empleado y contrato vinculados exitosamente!</span>
+                    </div>";
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6'>Error: " . $e->getMessage() . "</div>";
+        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6 border border-red-200'>Error: " . $e->getMessage() . "</div>";
     }
 }
 
@@ -79,25 +97,36 @@ if (isset($_POST['crear_empleado'])) {
 if (isset($_POST['editar_empleado'])) {
     try {
         $pdo->beginTransaction();
+        
+        // Actualizar datos básicos
         $stmt_u_emp = $pdo->prepare("UPDATE empleados SET nombre_completo = ?, cedula = ? WHERE id = ?");
         $stmt_u_emp->execute([$_POST['nombre_completo'], $_POST['cedula'], $_POST['id']]);
 
+        // Actualizar contrato activo (asumiendo que solo hay uno activo por empleado)
         $stmt_u_con = $pdo->prepare("
             UPDATE contratos 
-            SET salario_base = ?, aux_movilizacion_mensual = ?, aux_mov_nocturno_mensual = ? 
+            SET salario_base = ?, 
+                aux_movilizacion_mensual = ?, 
+                aux_mov_nocturno_mensual = ?,
+                es_direccion_confianza = ?
             WHERE empleado_id = ? AND activo = 1
         ");
         $stmt_u_con->execute([
             $_POST['salario_base'],
             $_POST['aux_movilizacion_mensual'],
             $_POST['aux_mov_nocturno_mensual'],
+            isset($_POST['es_direccion_confianza']) ? 1 : 0,
             $_POST['id']
         ]);
+
         $pdo->commit();
-        $mensaje = "<div class='bg-blue-100 text-blue-700 p-4 rounded-xl mb-6 shadow-sm border border-blue-200'>Información actualizada correctamente.</div>";
+        $mensaje = "<div class='bg-blue-100 text-blue-700 p-4 rounded-xl mb-6 shadow-sm border border-blue-200 flex items-center gap-3'>
+                        <i class='fas fa-sync'></i>
+                        <span>Información de <b>" . htmlspecialchars($_POST['nombre_completo']) . "</b> actualizada.</span>
+                    </div>";
     } catch (Exception $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6'>Error al editar: " . $e->getMessage() . "</div>";
+        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6 border border-red-200'>Error al editar: " . $e->getMessage() . "</div>";
     }
 }
 
@@ -111,14 +140,22 @@ if (isset($_POST['actualizar_ley']) && $tabla_ley) {
                 recargo_festivo = ? 
                 WHERE id = 1 OR 1=1 LIMIT 1";
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([$_POST['smlv'], $_POST['sub_trans'], $_POST['p_rn'], $_POST['p_rf']]);
-        $mensaje = "<div class='bg-indigo-100 text-indigo-700 p-4 rounded-xl mb-6 border border-indigo-200 shadow-sm'>Parámetros actualizados exitosamente.</div>";
+        $stmt->execute([
+            $_POST['smlv'], 
+            $_POST['sub_trans'], 
+            $_POST['p_rn'], 
+            $_POST['p_rf']
+        ]);
+        $mensaje = "<div class='bg-indigo-100 text-indigo-700 p-4 rounded-xl mb-6 border border-indigo-200 shadow-sm flex items-center gap-3'>
+                        <i class='fas fa-save'></i>
+                        <span>Parámetros legales para el periodo fiscal actualizados.</span>
+                    </div>";
     } catch (Exception $e) {
-        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6'>Error al guardar ley: " . $e->getMessage() . "</div>";
+        $mensaje = "<div class='bg-red-100 text-red-700 p-4 rounded-xl mb-6 border border-red-200'>Error al guardar ley: " . $e->getMessage() . "</div>";
     }
 }
 
-// Carga de datos para las tablas
+// Carga de datos
 $empleados = $pdo->query("
     SELECT e.*, c.salario_base, c.aux_movilizacion_mensual, c.aux_mov_nocturno_mensual, c.es_direccion_confianza 
     FROM empleados e
@@ -133,34 +170,35 @@ $config_ley = ($tabla_ley) ? $pdo->query("SELECT * FROM $tabla_ley LIMIT 1")->fe
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gestión de Nómina - Configuración</title>
+    <title>Configuración de Nómina</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        .modal-active { overflow: hidden; }
-        .glass-panel { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(10px); }
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; }
+        .modal-blur { backdrop-filter: blur(8px); }
     </style>
 </head>
-<body class="bg-[#f8fafc] text-slate-800 min-h-screen">
+<body class="bg-[#f1f5f9] text-slate-800 min-h-screen">
 
-    <div class="max-w-7xl mx-auto px-4 py-10">
+    <div class="max-w-7xl mx-auto px-6 py-12">
         
-        <!-- Header -->
-        <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-10">
+        <!-- Encabezado con Acciones -->
+        <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6 mb-12">
             <div>
-                <h1 class="text-4xl font-extrabold text-slate-900 tracking-tight">Configuración del Sistema</h1>
-                <p class="text-slate-500 mt-1 italic">Gestión de talento humano y parámetros legales 2026.</p>
+                <h1 class="text-5xl font-extrabold text-slate-900 tracking-tight">Panel de Control</h1>
+                <p class="text-slate-500 mt-2 text-lg">Administre el personal y los parámetros globales de ley.</p>
             </div>
-            <div class="flex flex-wrap gap-3">
-                <form action="" method="POST" onsubmit="return confirm('¿Reparar columnas faltantes en la BD?')">
-                    <button type="submit" name="reparar_db" class="bg-amber-50 text-amber-600 border border-amber-200 px-4 py-2.5 rounded-xl font-bold hover:bg-amber-100 transition flex items-center gap-2">
-                        <i class="fas fa-tools text-sm"></i> REPARAR BD
+            <div class="flex flex-wrap gap-4">
+                <form action="" method="POST" onsubmit="return confirm('¿Desea validar y reparar la estructura de la base de datos?')">
+                    <button type="submit" name="reparar_db" class="bg-amber-50 text-amber-700 border border-amber-200 px-5 py-3 rounded-2xl font-bold hover:bg-amber-100 transition-all flex items-center gap-2">
+                        <i class="fas fa-hammer text-sm"></i> REPARAR TABLAS
                     </button>
                 </form>
-                <button onclick="document.getElementById('modalCrear').style.display='flex'" class="bg-indigo-600 text-white px-6 py-2.5 rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition flex items-center gap-2">
-                    <i class="fas fa-plus"></i> NUEVO EMPLEADO
+                <button onclick="document.getElementById('modalCrear').style.display='flex'" class="bg-indigo-600 text-white px-8 py-3 rounded-2xl font-extrabold shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all flex items-center gap-2">
+                    <i class="fas fa-plus"></i> AGREGAR EMPLEADO
                 </button>
-                <a href="index.php" class="bg-white border border-slate-200 px-6 py-2.5 rounded-xl font-bold hover:bg-slate-50 transition">
+                <a href="index.php" class="bg-white border border-slate-200 px-8 py-3 rounded-2xl font-extrabold hover:bg-slate-50 transition-all shadow-sm">
                     VOLVER
                 </a>
             </div>
@@ -168,48 +206,57 @@ $config_ley = ($tabla_ley) ? $pdo->query("SELECT * FROM $tabla_ley LIMIT 1")->fe
 
         <?= $mensaje ?>
 
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-10">
             
-            <!-- Listado de Empleados -->
-            <div class="lg:col-span-8 space-y-6">
-                <div class="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
-                    <div class="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-                        <h3 class="font-bold text-lg flex items-center gap-2">
-                            <i class="fas fa-users text-indigo-500"></i> Nómina Activa
+            <!-- Listado Principal -->
+            <div class="lg:col-span-8">
+                <div class="bg-white rounded-[2rem] shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-8 border-b border-slate-100 bg-white flex justify-between items-center">
+                        <h3 class="font-extrabold text-xl text-slate-900 flex items-center gap-3">
+                            <span class="w-2 h-8 bg-indigo-600 rounded-full"></span>
+                            Personal de la Empresa
                         </h3>
-                        <span class="bg-indigo-100 text-indigo-700 text-xs px-3 py-1 rounded-full font-bold"><?= count($empleados) ?> Registrados</span>
+                        <span class="bg-slate-100 text-slate-600 text-xs px-4 py-1.5 rounded-full font-bold uppercase tracking-widest">
+                            <?= count($empleados) ?> registros
+                        </span>
                     </div>
                     <div class="overflow-x-auto">
-                        <table class="w-full text-left">
+                        <table class="w-full text-left border-collapse">
                             <thead>
-                                <tr class="text-[11px] uppercase tracking-wider text-slate-400 font-bold bg-slate-50/80">
-                                    <th class="px-6 py-4">Empleado</th>
-                                    <th class="px-6 py-4 text-center">Salario Base</th>
-                                    <th class="px-6 py-4 text-center">Aux. Movilidad</th>
-                                    <th class="px-6 py-4 text-right">Acciones</th>
+                                <tr class="text-[11px] uppercase tracking-[0.15em] text-slate-400 font-black bg-slate-50/50">
+                                    <th class="px-8 py-5">Colaborador</th>
+                                    <th class="px-8 py-5 text-center">Salario Base</th>
+                                    <th class="px-8 py-5 text-center">Tipo</th>
+                                    <th class="px-8 py-5 text-right">Acción</th>
                                 </tr>
                             </thead>
-                            <tbody class="divide-y divide-slate-100">
+                            <tbody class="divide-y divide-slate-50">
                                 <?php foreach($empleados as $emp): ?>
-                                <tr class="hover:bg-slate-50/80 transition-colors group">
-                                    <td class="px-6 py-5">
-                                        <div class="flex items-center gap-3">
-                                            <div class="w-10 h-10 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-bold">
+                                <tr class="hover:bg-slate-50/50 transition-all group">
+                                    <td class="px-8 py-6">
+                                        <div class="flex items-center gap-4">
+                                            <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white flex items-center justify-center font-bold text-lg shadow-lg shadow-indigo-100">
                                                 <?= substr($emp['nombre_completo'], 0, 1) ?>
                                             </div>
                                             <div>
-                                                <p class="font-bold text-slate-900 leading-none"><?= $emp['nombre_completo'] ?></p>
-                                                <p class="text-xs text-slate-400 mt-1"><?= $emp['cedula'] ?></p>
+                                                <p class="font-bold text-slate-900 text-base leading-none"><?= htmlspecialchars($emp['nombre_completo']) ?></p>
+                                                <p class="text-xs text-slate-400 mt-1.5 font-medium tracking-tight">ID: <?= htmlspecialchars($emp['cedula']) ?></p>
                                             </div>
                                         </div>
                                     </td>
-                                    <td class="px-6 py-5 text-center font-medium">$<?= number_format($emp['salario_base'], 0) ?></td>
-                                    <td class="px-6 py-5 text-center">
-                                        <span class="text-slate-500 text-xs">$<?= number_format($emp['aux_movilizacion_mensual'], 0) ?></span>
+                                    <td class="px-8 py-6 text-center font-bold text-slate-700">
+                                        $<?= number_format($emp['salario_base'], 0) ?>
                                     </td>
-                                    <td class="px-6 py-5 text-right">
-                                        <button onclick='abrirModalEditar(<?= json_encode($emp) ?>)' class="w-9 h-9 rounded-lg bg-slate-100 text-slate-600 hover:bg-indigo-600 hover:text-white transition-all flex items-center justify-center inline-flex">
-                                            <i class="fas fa-edit text-sm"></i>
+                                    <td class="px-8 py-6 text-center">
+                                        <?php if($emp['es_direccion_confianza']): ?>
+                                            <span class="text-[10px] bg-amber-100 text-amber-700 px-3 py-1 rounded-lg font-black uppercase">Confianza</span>
+                                        <?php else: ?>
+                                            <span class="text-[10px] bg-slate-100 text-slate-500 px-3 py-1 rounded-lg font-black uppercase">Operativo</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td class="px-8 py-6 text-right">
+                                        <button onclick='abrirModalEditar(<?= json_encode($emp) ?>)' class="w-10 h-10 rounded-xl bg-slate-100 text-slate-500 hover:bg-indigo-600 hover:text-white transition-all inline-flex items-center justify-center shadow-sm">
+                                            <i class="fas fa-pen-nib"></i>
                                         </button>
                                     </td>
                                 </tr>
@@ -220,51 +267,53 @@ $config_ley = ($tabla_ley) ? $pdo->query("SELECT * FROM $tabla_ley LIMIT 1")->fe
                 </div>
             </div>
 
-            <!-- Panel Lateral de Ley -->
+            <!-- Panel de Configuración de Ley -->
             <div class="lg:col-span-4">
-                <div class="bg-slate-900 text-white rounded-3xl p-8 shadow-2xl relative overflow-hidden sticky top-8">
-                    <i class="fas fa-balance-scale absolute -right-6 -top-6 text-9xl text-white/5"></i>
+                <div class="bg-slate-900 text-white rounded-[2.5rem] p-10 shadow-2xl relative overflow-hidden sticky top-8 border-t border-slate-700">
+                    <div class="absolute -right-12 -bottom-12 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl"></div>
                     
-                    <h3 class="text-xl font-bold mb-6 flex items-center gap-2 relative z-10">
-                        <i class="fas fa-gavel text-indigo-400"></i> Variables de Ley
+                    <h3 class="text-2xl font-extrabold mb-8 flex items-center gap-3 relative z-10">
+                        <i class="fas fa-balance-scale-right text-indigo-400"></i> Parámetros de Ley
                     </h3>
 
                     <?php if($config_ley): ?>
-                    <form action="" method="POST" class="space-y-5 relative z-10">
-                        <div>
-                            <label class="text-[10px] uppercase font-bold text-slate-400 tracking-widest block mb-2">Salario Mínimo (SMLV)</label>
+                    <form action="" method="POST" class="space-y-6 relative z-10">
+                        <div class="space-y-2">
+                            <label class="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] block">SMLV Vigente</label>
+                            <div class="relative group">
+                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
+                                <input type="number" name="smlv" value="<?= $config_ley['valor_smlv'] ?>" class="w-full bg-slate-800 border-2 border-transparent focus:border-indigo-500 rounded-2xl py-4 pl-9 pr-4 transition-all font-bold text-lg outline-none">
+                            </div>
+                        </div>
+
+                        <div class="space-y-2">
+                            <label class="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] block">Auxilio Transporte</label>
                             <div class="relative">
                                 <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
-                                <input type="number" name="smlv" value="<?= $config_ley['valor_smlv'] ?>" class="w-full bg-slate-800 border-none rounded-2xl py-3 pl-8 pr-4 focus:ring-2 focus:ring-indigo-500 font-bold">
+                                <input type="number" name="sub_trans" value="<?= $config_ley['subsidio_transporte'] ?>" class="w-full bg-slate-800 border-2 border-transparent focus:border-indigo-500 rounded-2xl py-4 pl-9 pr-4 transition-all font-bold text-lg outline-none">
                             </div>
                         </div>
 
-                        <div>
-                            <label class="text-[10px] uppercase font-bold text-slate-400 tracking-widest block mb-2">Auxilio Transporte</label>
-                            <div class="relative">
-                                <span class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-bold">$</span>
-                                <input type="number" name="sub_trans" value="<?= $config_ley['subsidio_transporte'] ?>" class="w-full bg-slate-800 border-none rounded-2xl py-3 pl-8 pr-4 focus:ring-2 focus:ring-indigo-500 font-bold">
+                        <div class="grid grid-cols-2 gap-5 pt-2">
+                            <div class="space-y-2">
+                                <label class="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] block text-center">% Nocturno</label>
+                                <input type="text" name="p_rn" value="<?= $config_ley['recargo_nocturno'] ?? 35 ?>" class="w-full bg-slate-800 border-2 border-transparent focus:border-indigo-500 rounded-2xl py-4 px-4 transition-all font-black text-center text-indigo-300 outline-none">
+                            </div>
+                            <div class="space-y-2">
+                                <label class="text-[10px] uppercase font-black text-slate-500 tracking-[0.2em] block text-center">% Festivo</label>
+                                <input type="text" name="p_rf" value="<?= $config_ley['recargo_festivo'] ?? 75 ?>" class="w-full bg-slate-800 border-2 border-transparent focus:border-indigo-500 rounded-2xl py-4 px-4 transition-all font-black text-center text-indigo-300 outline-none">
                             </div>
                         </div>
 
-                        <div class="grid grid-cols-2 gap-4">
-                            <div>
-                                <label class="text-[10px] uppercase font-bold text-slate-400 tracking-widest block mb-2">% Rec. Nocturno</label>
-                                <input type="text" name="p_rn" value="<?= $config_ley['recargo_nocturno'] ?? 35 ?>" class="w-full bg-slate-800 border-none rounded-2xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-bold text-center">
-                            </div>
-                            <div>
-                                <label class="text-[10px] uppercase font-bold text-slate-400 tracking-widest block mb-2">% Rec. Festivo</label>
-                                <input type="text" name="p_rf" value="<?= $config_ley['recargo_festivo'] ?? 75 ?>" class="w-full bg-slate-800 border-none rounded-2xl py-3 px-4 focus:ring-2 focus:ring-indigo-500 font-bold text-center">
-                            </div>
-                        </div>
-
-                        <button type="submit" name="actualizar_ley" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-4 rounded-2xl font-bold transition-all shadow-lg shadow-indigo-900/50 flex items-center justify-center gap-2">
-                            <i class="fas fa-save"></i> ACTUALIZAR PARÁMETROS
+                        <button type="submit" name="actualizar_ley" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-5 rounded-2xl font-black transition-all shadow-xl shadow-indigo-900/40 flex items-center justify-center gap-3 mt-4 active:scale-[0.98]">
+                            <i class="fas fa-check-circle"></i> GUARDAR CAMBIOS
                         </button>
                     </form>
                     <?php else: ?>
-                        <div class="bg-red-500/10 border border-red-500/20 p-4 rounded-2xl text-red-400 text-sm">
-                            <i class="fas fa-exclamation-triangle mr-2"></i> Error: Tabla de parámetros no encontrada. Use el botón Reparar BD.
+                        <div class="bg-red-500/10 border border-red-500/20 p-6 rounded-[2rem] text-red-400 text-sm text-center">
+                            <i class="fas fa-exclamation-triangle text-3xl mb-3 block"></i>
+                            <p class="font-bold">Tabla de configuración no detectada.</p>
+                            <p class="mt-2 opacity-70">Utilice el botón de "Reparar Tablas" para inicializar el sistema.</p>
                         </div>
                     <?php endif; ?>
                 </div>
@@ -273,92 +322,111 @@ $config_ley = ($tabla_ley) ? $pdo->query("SELECT * FROM $tabla_ley LIMIT 1")->fe
     </div>
 
     <!-- MODAL CREAR -->
-    <div id="modalCrear" style="display:none" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 items-center justify-center p-4">
-        <div class="bg-white rounded-[32px] shadow-2xl max-w-xl w-full overflow-hidden animate-in fade-in zoom-in duration-200">
-            <div class="p-8">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-extrabold text-slate-900">Alta de Colaborador</h2>
-                    <button onclick="document.getElementById('modalCrear').style.display='none'" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times text-xl"></i></button>
+    <div id="modalCrear" style="display:none" class="fixed inset-0 bg-slate-900/80 modal-blur z-50 items-center justify-center p-4">
+        <div class="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full overflow-hidden">
+            <div class="p-10">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-3xl font-black text-slate-900 tracking-tight">Alta de Personal</h2>
+                    <button onclick="document.getElementById('modalCrear').style.display='none'" class="w-10 h-10 rounded-full bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-all">
+                        <i class="fas fa-times"></i>
+                    </button>
                 </div>
-                <form action="" method="POST" class="space-y-4">
+                <form action="" method="POST" class="space-y-6">
                     <input type="hidden" name="crear_empleado" value="1">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Nombre Completo</label>
-                            <input type="text" name="nombre_completo" class="w-full border-slate-200 border rounded-xl p-3 focus:ring-2 focus:ring-indigo-500" required>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Nombre Completo</label>
+                            <input type="text" name="nombre_completo" class="w-full border-slate-200 border-2 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all font-bold" required>
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Cédula / ID</label>
-                            <input type="text" name="cedula" class="w-full border-slate-200 border rounded-xl p-3 focus:ring-2 focus:ring-indigo-500" required>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Salario Mensual</label>
-                            <input type="number" name="salario_base" class="w-full border-slate-200 border rounded-xl p-3 focus:ring-2 focus:ring-indigo-500" required>
-                        </div>
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Fecha de Ingreso</label>
-                            <input type="date" name="fecha_ingreso" value="<?= date('Y-m-d') ?>" class="w-full border-slate-200 border rounded-xl p-3 focus:ring-2 focus:ring-indigo-500">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Documento de Identidad</label>
+                            <input type="text" name="cedula" class="w-full border-slate-200 border-2 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all font-bold" required>
                         </div>
                     </div>
-                    <div class="bg-indigo-50 p-4 rounded-2xl space-y-3 border border-indigo-100 mt-4">
-                        <p class="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Compensaciones Extra (Mensual)</p>
-                        <div class="grid grid-cols-2 gap-4">
-                            <input type="number" name="aux_movilizacion_mensual" placeholder="Aux. Movilidad" class="w-full bg-white border-none rounded-lg p-2.5 text-sm shadow-inner">
-                            <input type="number" name="aux_mov_nocturno_mensual" placeholder="Aux. Nocturno" class="w-full bg-white border-none rounded-lg p-2.5 text-sm shadow-inner">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Salario Mensual Base</label>
+                            <input type="number" name="salario_base" class="w-full border-slate-200 border-2 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all font-bold" required>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Fecha Vinculación</label>
+                            <input type="date" name="fecha_ingreso" value="<?= date('Y-m-d') ?>" class="w-full border-slate-200 border-2 rounded-2xl p-4 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all font-bold">
                         </div>
                     </div>
-                    <div class="flex items-center gap-2 p-2">
-                        <input type="checkbox" name="es_direccion_confianza" id="confianza" class="w-5 h-5 accent-indigo-600">
-                        <label for="confianza" class="text-sm font-bold text-slate-600">Es Personal de Dirección y Confianza</label>
+                    <div class="bg-indigo-50/50 p-8 rounded-3xl space-y-5 border-2 border-indigo-100/50">
+                        <p class="text-[11px] font-black text-indigo-500 uppercase tracking-[0.2em]">Compensaciones Mensuales Adicionales</p>
+                        <div class="grid grid-cols-2 gap-6">
+                            <div class="space-y-2">
+                                <label class="text-[10px] font-bold text-indigo-400 uppercase">Aux. Movilidad</label>
+                                <input type="number" name="aux_movilizacion_mensual" class="w-full bg-white border-2 border-indigo-100 rounded-xl p-3 shadow-sm outline-none font-bold">
+                            </div>
+                            <div class="space-y-2">
+                                <label class="text-[10px] font-bold text-indigo-400 uppercase">Aux. Nocturno</label>
+                                <input type="number" name="aux_mov_nocturno_mensual" class="w-full bg-white border-2 border-indigo-100 rounded-xl p-3 shadow-sm outline-none font-bold">
+                            </div>
+                        </div>
                     </div>
-                    <button type="submit" class="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold mt-6 shadow-lg shadow-indigo-100">REGISTRAR EN EL SISTEMA</button>
+                    <div class="flex items-center gap-4 bg-slate-50 p-4 rounded-2xl border-2 border-slate-100">
+                        <input type="checkbox" name="es_direccion_confianza" id="confianza" class="w-6 h-6 accent-indigo-600 rounded-lg cursor-pointer">
+                        <label for="confianza" class="text-sm font-extrabold text-slate-600 cursor-pointer select-none">Personal de Dirección, Manejo y Confianza</label>
+                    </div>
+                    <button type="submit" class="w-full bg-indigo-600 text-white py-5 rounded-[1.5rem] font-black text-lg mt-4 shadow-2xl shadow-indigo-200 hover:bg-indigo-700 transition-all transform active:scale-[0.99]">
+                        FINALIZAR REGISTRO
+                    </button>
                 </form>
             </div>
         </div>
     </div>
 
     <!-- MODAL EDITAR -->
-    <div id="modalEditar" style="display:none" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 items-center justify-center p-4">
-        <div class="bg-white rounded-[32px] shadow-2xl max-w-xl w-full overflow-hidden">
-            <div class="p-8">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-extrabold text-slate-900">Editar Colaborador</h2>
-                    <button onclick="document.getElementById('modalEditar').style.display='none'" class="text-slate-400 hover:text-slate-600"><i class="fas fa-times text-xl"></i></button>
+    <div id="modalEditar" style="display:none" class="fixed inset-0 bg-slate-900/80 modal-blur z-50 items-center justify-center p-4">
+        <div class="bg-white rounded-[2.5rem] shadow-2xl max-w-2xl w-full overflow-hidden">
+            <div class="p-10">
+                <div class="flex justify-between items-center mb-8">
+                    <h2 class="text-3xl font-black text-slate-900 tracking-tight text-indigo-600">Actualizar Datos</h2>
+                    <button onclick="document.getElementById('modalEditar').style.display='none'" class="w-10 h-10 rounded-full bg-slate-100 text-slate-400 hover:text-slate-600 flex items-center justify-center transition-all">
+                        <i class="fas fa-times"></i>
+                    </button>
                 </div>
-                <form action="" method="POST" class="space-y-4">
+                <form action="" method="POST" class="space-y-6">
                     <input type="hidden" name="editar_empleado" value="1">
                     <input type="hidden" name="id" id="edit_id">
                     
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Nombre</label>
-                            <input type="text" name="nombre_completo" id="edit_nombre" class="w-full border-slate-200 border rounded-xl p-3">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Nombre</label>
+                            <input type="text" name="nombre_completo" id="edit_nombre" class="w-full border-slate-200 border-2 rounded-2xl p-4 font-bold outline-none">
                         </div>
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Cédula</label>
-                            <input type="text" name="cedula" id="edit_cedula" class="w-full border-slate-200 border rounded-xl p-3">
-                        </div>
-                    </div>
-
-                    <div class="space-y-1">
-                        <label class="text-xs font-bold text-slate-400 uppercase ml-1">Salario Base Actual</label>
-                        <input type="number" name="salario_base" id="edit_salario" class="w-full border-slate-200 border rounded-xl p-3">
-                    </div>
-
-                    <div class="grid grid-cols-2 gap-4">
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Aux. Movilidad</label>
-                            <input type="number" name="aux_movilizacion_mensual" id="edit_aux_mov" class="w-full border-slate-200 border rounded-xl p-3">
-                        </div>
-                        <div class="space-y-1">
-                            <label class="text-xs font-bold text-slate-400 uppercase ml-1">Aux. Nocturno</label>
-                            <input type="number" name="aux_mov_nocturno_mensual" id="edit_aux_noc" class="w-full border-slate-200 border rounded-xl p-3">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Documento</label>
+                            <input type="text" name="cedula" id="edit_cedula" class="w-full border-slate-200 border-2 rounded-2xl p-4 font-bold outline-none">
                         </div>
                     </div>
 
-                    <button type="submit" class="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold mt-6 shadow-lg">GUARDAR CAMBIOS</button>
+                    <div class="space-y-2">
+                        <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1 text-center block">Salario Mensual Pactado</label>
+                        <input type="number" name="salario_base" id="edit_salario" class="w-full border-slate-200 border-2 rounded-2xl p-4 font-black text-center text-2xl text-indigo-600 outline-none">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Aux. Movilidad</label>
+                            <input type="number" name="aux_movilizacion_mensual" id="edit_aux_mov" class="w-full border-slate-200 border-2 rounded-2xl p-4 font-bold outline-none">
+                        </div>
+                        <div class="space-y-2">
+                            <label class="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Aux. Nocturno</label>
+                            <input type="number" name="aux_mov_nocturno_mensual" id="edit_aux_noc" class="w-full border-slate-200 border-2 rounded-2xl p-4 font-bold outline-none">
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-4 bg-amber-50 p-4 rounded-2xl border-2 border-amber-100">
+                        <input type="checkbox" name="es_direccion_confianza" id="edit_confianza" class="w-6 h-6 accent-amber-500 rounded-lg cursor-pointer">
+                        <label for="edit_confianza" class="text-sm font-extrabold text-amber-700 cursor-pointer select-none">Personal de Dirección, Manejo y Confianza</label>
+                    </div>
+
+                    <button type="submit" class="w-full bg-slate-900 text-white py-5 rounded-[1.5rem] font-black text-lg mt-4 shadow-xl hover:bg-black transition-all">
+                        CONFIRMAR ACTUALIZACIÓN
+                    </button>
                 </form>
             </div>
         </div>
@@ -372,8 +440,16 @@ $config_ley = ($tabla_ley) ? $pdo->query("SELECT * FROM $tabla_ley LIMIT 1")->fe
             document.getElementById('edit_salario').value = emp.salario_base;
             document.getElementById('edit_aux_mov').value = emp.aux_movilizacion_mensual;
             document.getElementById('edit_aux_noc').value = emp.aux_mov_nocturno_mensual;
+            document.getElementById('edit_confianza').checked = (parseInt(emp.es_direccion_confianza) === 1);
             
             document.getElementById('modalEditar').style.display = 'flex';
+        }
+
+        // Cerrar modales al hacer clic fuera del contenido
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-blur')) {
+                event.target.style.display = "none";
+            }
         }
     </script>
 </body>
