@@ -1,169 +1,122 @@
 <?php
+// Desactivar visualización de errores para que no rompan el HTML en producción
 error_reporting(E_ALL);
-ini_set('display_errors', 1); // Cambiado a 1 para desarrollo, volver a 0 en producción
+ini_set('display_errors', 0);
 
 require_once 'config/db.php';
-// Asegurar que PDO lance excepciones
-$pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $mensaje = "";
 
 /**
- * SINCRONIZAR BASE DE DATOS
+ * FUNCIÓN PARA DETECTAR COLUMNAS REALES
  */
+function obtenerColumnaAnio($pdo) {
+    try {
+        $rs = $pdo->query("SHOW COLUMNS FROM config_ley");
+        $columnas = $rs->fetchAll(PDO::FETCH_COLUMN);
+        if (in_array('anio', $columnas)) return 'anio';
+        if (in_array('vigencia', $columnas)) return 'vigencia';
+        return 'id'; // Por defecto usamos ID para el orden si no hay columna de tiempo clara
+    } catch (Exception $e) {
+        return 'id';
+    }
+}
+
+$col_anio = obtenerColumnaAnio($pdo);
+
+// --- LÓGICA DE REPARACIÓN ---
 if (isset($_POST['reparar_db'])) {
     try {
-        $columnasLey = $pdo->query("SHOW COLUMNS FROM config_ley")->fetchAll(PDO::FETCH_COLUMN);
-
-        $nuevasColumnas = [
-            'recargo_nocturno' => "DECIMAL(5,2) DEFAULT 35.00",
-            'recargo_festivo' => "DECIMAL(5,2) DEFAULT 75.00",
-            'recargo_festivo_nocturno' => "DECIMAL(5,2) DEFAULT 110.00"
-        ];
-
-        foreach ($nuevasColumnas as $col => $def) {
-            if (!in_array($col, $columnasLey)) {
-                $pdo->exec("ALTER TABLE config_ley ADD $col $def");
-            }
-        }
-
-        $pdo->exec("CREATE TABLE IF NOT EXISTS festivos (
-            fecha DATE PRIMARY KEY,
-            descripcion VARCHAR(100)
-        )");
-
-        $mensaje = "Base de datos sincronizada.";
-    } catch (Exception $e) {
-        $mensaje = "Error sincronizando: " . $e->getMessage();
-    }
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_nocturno DECIMAL(5,2) DEFAULT 35.00");
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_festivo DECIMAL(5,2) DEFAULT 75.00");
+        $pdo->exec("ALTER TABLE config_ley ADD COLUMN IF NOT EXISTS recargo_festivo_nocturno DECIMAL(5,2) DEFAULT 110.00");
+        $pdo->exec("CREATE TABLE IF NOT EXISTS festivos (id INT AUTO_INCREMENT PRIMARY KEY, fecha DATE UNIQUE, descripcion VARCHAR(100))");
+        $mensaje = "Estructura sincronizada.";
+    } catch (Exception $e) { $mensaje = "Aviso: " . $e->getMessage(); }
 }
 
-/**
- * CARGA MASIVA CSV FESTIVOS
- */
+// --- CARGA DE CSV ---
 if (isset($_FILES['csv_festivos']) && $_FILES['csv_festivos']['size'] > 0) {
-    try {
-        $handle = fopen($_FILES['csv_festivos']['tmp_name'], "r");
-        fgetcsv($handle); // Saltar cabecera
-
-        $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (fecha, descripcion) VALUES (?, ?)");
-
-        while (($datos = fgetcsv($handle, 1000, ",")) !== FALSE) {
-            if (count($datos) >= 2) {
-                // Ajustado según orden común de CSV: suele ser Fecha, Descripción
-                $fecha = trim($datos[0]);
-                $descripcion = trim($datos[1]);
-                
-                // Validación básica de fecha para evitar errores de SQL
-                if (strtotime($fecha)) {
-                    $stmt->execute([$fecha, $descripcion]);
-                }
-            }
-        }
-        fclose($handle);
-        $mensaje = "Festivos importados correctamente.";
-    } catch (Exception $e) {
-        $mensaje = "Error importando CSV: " . $e->getMessage();
+    $handle = fopen($_FILES['csv_festivos']['tmp_name'], "r");
+    fgetcsv($handle); // saltar cabecera
+    $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (descripcion, fecha) VALUES (?, ?)");
+    while (($datos = fgetcsv($handle, 1000, ",")) !== FALSE) {
+        if (count($datos) >= 2) $stmt->execute([trim($datos[0]), trim($datos[1])]);
     }
+    fclose($handle);
+    $mensaje = "Festivos importados correctamente.";
 }
 
-/**
- * ELIMINAR FESTIVO
- */
+// --- ELIMINAR FESTIVO ---
 if (isset($_GET['del_festivo'])) {
-    try {
-        $stmt = $pdo->prepare("DELETE FROM festivos WHERE fecha = ?");
-        $stmt->execute([$_GET['del_festivo']]);
-        header("Location: configuracion.php?msg=deleted");
-        exit;
-    } catch (Exception $e) {
-        $mensaje = "Error eliminando festivo.";
-    }
+    $stmt = $pdo->prepare("DELETE FROM festivos WHERE id = ?");
+    $stmt->execute([(int)$_GET['del_festivo']]);
+    header("Location: configuracion.php?msg=deleted");
+    exit;
 }
+if(isset($_GET['msg']) && $_GET['msg'] == 'deleted') $mensaje = "Festivo eliminado.";
 
-if (isset($_GET['msg']) && $_GET['msg'] == 'deleted') {
-    $mensaje = "Festivo eliminado.";
-}
-
-/**
- * AGREGAR FESTIVO MANUAL
- */
+// --- AGREGAR FESTIVO INDIVIDUAL ---
 if (isset($_POST['agregar_festivo'])) {
-    try {
-        $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (fecha, descripcion) VALUES (?, ?)");
-        $stmt->execute([$_POST['fecha_festivo'], $_POST['desc_festivo']]);
-        $mensaje = "Festivo agregado.";
-    } catch (Exception $e) {
-        $mensaje = "Error agregando festivo.";
-    }
+    $stmt = $pdo->prepare("INSERT IGNORE INTO festivos (fecha, descripcion) VALUES (?, ?)");
+    $stmt->execute([$_POST['fecha_festivo'], $_POST['desc_festivo']]);
+    $mensaje = "Festivo agregado.";
 }
 
-/**
- * GUARDAR CONFIG LEY
- */
+// --- GUARDAR PARÁMETROS LEY ---
 if (isset($_POST['guardar_ley'])) {
-    try {
-        $stmt = $pdo->prepare("INSERT INTO config_ley (
-            fecha_inicio, fecha_fin, smmlv, aux_transporte_ley, 
-            hora_inicio_nocturna, hora_fin_nocturna, porc_salud_trabajador, 
-            porc_pension_trabajador, jornada_semanal_horas, recargo_nocturno, 
-            recargo_festivo, recargo_festivo_nocturno
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    // Ajustado a las columnas exactas del SQL: smmlv, aux_transporte_ley, porc_salud_trabajador, porc_pension_trabajador
+    $stmt = $pdo->prepare("INSERT INTO config_ley (fecha_inicio, smmlv, aux_transporte_ley, porc_salud_trabajador, porc_pension_trabajador, recargo_nocturno, recargo_festivo, recargo_festivo_nocturno) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    
+    // Convertimos porcentajes enteros a decimales para la DB (ej: 4 a 0.04)
+    $salud_dec = $_POST['salud'] / 100;
+    $pension_dec = $_POST['pension'] / 100;
+    $fecha_ini = $_POST['anio_val'] . "-01-01";
 
-        $stmt->execute([
-            $_POST['fecha_inicio'],
-            !empty($_POST['fecha_fin']) ? $_POST['fecha_fin'] : null,
-            $_POST['smmlv'],
-            $_POST['aux_transporte_ley'],
-            $_POST['hora_inicio_nocturna'],
-            $_POST['hora_fin_nocturna'],
-            $_POST['porc_salud_trabajador'],
-            $_POST['porc_pension_trabajador'],
-            $_POST['jornada_semanal_horas'],
-            $_POST['recargo_nocturno'],
-            $_POST['recargo_festivo'],
-            $_POST['recargo_festivo_nocturno']
-        ]);
-        $mensaje = "Parámetros legales actualizados.";
-    } catch (Exception $e) {
-        $mensaje = "Error guardando ley: " . $e->getMessage();
-    }
+    $stmt->execute([
+        $fecha_ini, 
+        $_POST['smlv'], 
+        $_POST['aux_t'], 
+        $salud_dec, 
+        $pension_dec, 
+        $_POST['r_noc'], 
+        $_POST['r_fes'], 
+        $_POST['r_fes_noc']
+    ]);
+    $mensaje = "Parámetros actualizados.";
 }
 
-/**
- * CREAR / EDITAR EMPLEADO
- */
+// --- ACCIONES DE EMPLEADO ---
 if (isset($_POST['accion_empleado'])) {
-    try {
-        $pdo->beginTransaction();
-        if ($_POST['accion_empleado'] == 'crear') {
-            $stmt = $pdo->prepare("INSERT INTO empleados (cedula, nombre_completo, fecha_ingreso, estado) VALUES (?, ?, ?, 'Activo')");
-            $stmt->execute([$_POST['cedula'], $_POST['nombre'], $_POST['fecha_ingreso']]);
-            $empleado_id = $pdo->lastInsertId();
-
-            $stmtContrato = $pdo->prepare("INSERT INTO contratos (empleado_id, salario_base, es_direccion_confianza, aux_movilizacion, aux_mov_nocturno, fecha_inicio, activo) VALUES (?, ?, ?, ?, ?, ?, 1)");
-            $stmtContrato->execute([$empleado_id, $_POST['salario'], isset($_POST['direccion_confianza']) ? 1 : 0, $_POST['aux_mov'], $_POST['aux_mov_noct'], $_POST['fecha_ingreso']]);
+    if ($_POST['accion_empleado'] == 'crear') {
+        try {
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("INSERT INTO empleados (cedula, nombre_completo, fecha_ingreso) VALUES (?, ?, ?)");
+            $stmt->execute([$_POST['cedula'], $_POST['nombre'], date('Y-m-d')]);
+            $emp_id = $pdo->lastInsertId();
+            $stmt_c = $pdo->prepare("INSERT INTO contratos (empleado_id, salario_base, aux_movilizacion, aux_mov_nocturno, fecha_inicio, activo) VALUES (?, ?, ?, ?, ?, 1)");
+            $stmt_c->execute([$emp_id, $_POST['salario'], $_POST['aux_mov'] ?? 0, $_POST['aux_mov_noct'] ?? 0, date('Y-m-d')]);
+            $pdo->commit();
             $mensaje = "Empleado registrado.";
-        } else {
-            $stmt = $pdo->prepare("UPDATE empleados SET cedula = ?, nombre_completo = ?, fecha_ingreso = ?, estado = ? WHERE id = ?");
-            $stmt->execute([$_POST['cedula'], $_POST['nombre'], $_POST['fecha_ingreso'], $_POST['estado'], $_POST['id_empleado']]);
-
-            $stmtContrato = $pdo->prepare("UPDATE contratos SET salario_base = ?, es_direccion_confianza = ?, aux_movilizacion = ?, aux_mov_nocturno = ? WHERE empleado_id = ? AND activo = 1");
-            $stmtContrato->execute([$_POST['salario'], isset($_POST['direccion_confianza']) ? 1 : 0, $_POST['aux_mov'], $_POST['aux_mov_noct'], $_POST['id_empleado']]);
-            $mensaje = "Empleado actualizado.";
-        }
-        $pdo->commit();
-    } catch (Exception $e) {
-        if($pdo->inTransaction()) $pdo->rollBack();
-        $mensaje = "Error en empleado: " . $e->getMessage();
+        } catch (Exception $e) { $pdo->rollBack(); $mensaje = "Error: " . $e->getMessage(); }
+    } 
+    elseif ($_POST['accion_empleado'] == 'editar') {
+        try {
+            $pdo->beginTransaction();
+            $stmt = $pdo->prepare("UPDATE empleados SET cedula = ?, nombre_completo = ? WHERE id = ?");
+            $stmt->execute([$_POST['cedula'], $_POST['nombre'], $_POST['id_empleado']]);
+            $stmt_c = $pdo->prepare("UPDATE contratos SET salario_base = ?, aux_movilizacion = ?, aux_mov_nocturno = ? WHERE empleado_id = ? AND activo = 1");
+            $stmt_c->execute([$_POST['salario'], $_POST['aux_mov'], $_POST['aux_mov_noct'], $_POST['id_empleado']]);
+            $pdo->commit();
+            $mensaje = "Datos de empleado actualizados.";
+        } catch (Exception $e) { $pdo->rollBack(); $mensaje = "Error al editar: " . $e->getMessage(); }
     }
 }
 
-// Consultas para la vista
-$ley_actual = $pdo->query("SELECT * FROM config_ley ORDER BY fecha_inicio DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
-$festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll(PDO::FETCH_ASSOC);
+$empleados = $pdo->query("SELECT e.*, c.salario_base, c.aux_movilizacion, c.aux_mov_nocturno FROM empleados e LEFT JOIN contratos c ON e.id = c.empleado_id WHERE c.activo = 1 OR c.activo IS NULL ORDER BY e.nombre_completo ASC")->fetchAll();
+$ley_actual = $pdo->query("SELECT * FROM config_ley ORDER BY id DESC LIMIT 1")->fetch();
+$festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll();
 ?>
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -172,94 +125,176 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll(P
     <title>Configuración - Nómina</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        .modal { transition: opacity 0.25s ease; }
+        body.modal-active { overflow: hidden; }
+    </style>
 </head>
 <body class="bg-gray-50 min-h-screen pb-12">
 
-<nav class="bg-slate-900 p-4 shadow-xl text-white mb-6">
-    <div class="container mx-auto flex justify-between items-center">
-        <h1 class="text-xl font-bold text-indigo-400">NOMINA <span class="text-white font-light">| Configuración</span></h1>
-        <div class="flex space-x-4">
-            <a href="asistencia.php" class="hover:text-indigo-400">Asistencia</a>
-            <a href="nomina.php" class="hover:text-indigo-400">Nómina</a>
-            <a href="index.php" class="bg-indigo-600 px-4 py-2 rounded-lg text-sm font-bold">Inicio</a>
+    <nav class="bg-slate-900 p-4 shadow-xl text-white mb-6">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold text-indigo-400">NOMINA <span class="text-white font-light">| Configuración</span></h1>
+            <div class="flex space-x-4">
+                <a href="asistencia.php" class="hover:text-indigo-400">Asistencia</a>
+                <a href="nomina.php" class="hover:text-indigo-400">Nómina</a>
+                <a href="index.php" class="bg-indigo-600 px-4 py-2 rounded-lg text-sm font-bold">Inicio</a>
+            </div>
         </div>
-    </div>
-</nav>
+    </nav>
 
-<div class="container mx-auto px-4">
-    <?php if($mensaje): ?>
-        <div class="bg-emerald-100 border-l-4 border-emerald-500 p-4 mb-6 shadow-sm flex justify-between items-center">
-            <span class="text-emerald-800 font-medium"><i class="fas fa-check-circle mr-2"></i><?= htmlspecialchars($mensaje) ?></span>
-            <button onclick="this.parentElement.remove()" class="text-emerald-400 text-2xl">&times;</button>
-        </div>
-    <?php endif; ?>
+    <div class="container mx-auto px-4">
+        <?php if($mensaje): ?>
+            <div class="bg-emerald-100 border-l-4 border-emerald-500 p-4 mb-6 shadow-sm flex justify-between items-center animate-pulse">
+                <span class="text-emerald-800 font-medium"><i class="fas fa-check-circle mr-2"></i> <?= htmlspecialchars($mensaje) ?></span>
+                <button onclick="this.parentElement.remove()" class="text-emerald-400 text-2xl">&times;</button>
+            </div>
+        <?php endif; ?>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <!-- FORMULARIO PARÁMETROS LEGALES -->
-        <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div class="bg-slate-800 p-4 text-white font-bold"><i class="fas fa-percent mr-2 text-indigo-400"></i>Parámetros Legales</div>
-            <form method="POST" class="p-4 space-y-4">
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase">Fecha Inicio</label>
-                        <input type="date" name="fecha_inicio" value="<?= $ley_actual['fecha_inicio'] ?? date('Y-m-d') ?>" class="w-full bg-slate-50 border rounded p-2 text-sm" required>
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            
+            <div class="space-y-6">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="bg-slate-800 p-4 text-white font-bold">
+                        <i class="fas fa-percent mr-2 text-indigo-400"></i> Parámetros Legales
                     </div>
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase">Fecha Fin</label>
-                        <input type="date" name="fecha_fin" value="<?= $ley_actual['fecha_fin'] ?? '' ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
-                    </div>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase">SMMLV</label>
-                        <input type="number" name="smmlv" value="<?= $ley_actual['smmlv'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm" required>
-                    </div>
-                    <div>
-                        <label class="block text-[10px] font-bold text-slate-400 uppercase">Aux Transporte</label>
-                        <input type="number" name="aux_transporte_ley" value="<?= $ley_actual['aux_transporte_ley'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm" required>
-                    </div>
-                </div>
-                <!-- Otros campos del formulario... -->
-                <button type="submit" name="guardar_ley" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition">Guardar Configuración</button>
-            </form>
-        </div>
+                    <form method="POST" class="p-4 space-y-4">
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Año Vigencia</label>
+                                <input type="number" name="anio_val" value="<?= isset($ley_actual['fecha_inicio']) ? substr($ley_actual['fecha_inicio'], 0, 4) : date('Y') ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">SMLV</label>
+                                <input type="number" name="smlv" value="<?= $ley_actual['smmlv'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                            </div>
+                        </div>
 
-        <!-- SECCIÓN FESTIVOS -->
-        <div class="lg:col-span-2 space-y-6">
-            <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-                <div class="bg-indigo-600 p-4 text-white font-bold flex justify-between items-center">
-                    <span><i class="fas fa-calendar-alt mr-2"></i>Festivos Registrados</span>
-                    <form method="POST"><button type="submit" name="reparar_db" class="text-[10px] bg-white/20 px-2 py-1 rounded hover:bg-white/30 uppercase">Sincronizar DB</button></form>
-                </div>
-                
-                <div class="p-4 bg-indigo-50 border-b flex flex-wrap gap-4">
-                    <form method="POST" enctype="multipart/form-data" class="flex items-center gap-2">
-                        <input type="file" name="csv_festivos" accept=".csv" class="text-xs" required>
-                        <button type="submit" class="bg-indigo-600 text-white px-3 py-1 rounded text-[10px] font-bold uppercase">Subir CSV</button>
+                        <div class="space-y-2 border-t pt-2">
+                            <div>
+                                <label class="block text-[10px] font-bold text-slate-400 uppercase">Auxilio Transporte</label>
+                                <input type="number" name="aux_t" value="<?= $ley_actual['aux_transporte_ley'] ?? 0 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                            </div>
+                            
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Salud Trab. (%)</label>
+                                    <input type="number" step="0.01" name="salud" value="<?= ($ley_actual['porc_salud_trabajador'] ?? 0.04) * 100 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                                </div>
+                                <div>
+                                    <label class="block text-[10px] font-bold text-slate-400 uppercase">Pensión Trab. (%)</label>
+                                    <input type="number" step="0.01" name="pension" value="<?= ($ley_actual['porc_pension_trabajador'] ?? 0.04) * 100 ?>" class="w-full bg-slate-50 border rounded p-2 text-sm">
+                                </div>
+                            </div>
+
+                            <div class="flex justify-between text-xs items-center text-slate-600 pt-2 border-t">
+                                <span>Recargo Nocturno (%)</span>
+                                <input type="number" step="0.1" name="r_noc" value="<?= $ley_actual['recargo_nocturno'] ?? 35 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                            <div class="flex justify-between text-xs items-center text-slate-600">
+                                <span>Recargo Festivo (%)</span>
+                                <input type="number" step="0.1" name="r_fes" value="<?= $ley_actual['recargo_festivo'] ?? 75 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                            <div class="flex justify-between text-xs items-center text-slate-600">
+                                <span>Festivo Nocturno (%)</span>
+                                <input type="number" step="0.1" name="r_fes_noc" value="<?= $ley_actual['recargo_festivo_nocturno'] ?? 110 ?>" class="w-20 border rounded p-1 text-right bg-slate-50">
+                            </div>
+                        </div>
+
+                        <button type="submit" name="guardar_ley" class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-200">
+                            Actualizar Ley
+                        </button>
                     </form>
-                    <form method="POST" class="flex items-center gap-2 flex-1">
-                        <input type="date" name="fecha_festivo" class="border rounded p-1 text-xs" required>
-                        <input type="text" name="desc_festivo" placeholder="Descripción" class="border rounded p-1 text-xs flex-1" required>
-                        <button type="submit" name="agregar_festivo" class="bg-emerald-600 text-white px-3 py-1 rounded text-[10px] font-bold uppercase">Agregar</button>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="bg-indigo-600 p-4 text-white font-bold flex justify-between items-center">
+                        <span><i class="fas fa-calendar-alt mr-2"></i> Festivos</span>
+                        <form method="POST" onsubmit="return confirm('¿Sincronizar estructura?')">
+                            <button type="submit" name="reparar_db" class="text-[9px] bg-white/20 px-2 py-1 rounded hover:bg-white/30 uppercase">Sincronizar</button>
+                        </form>
+                    </div>
+                    
+                    <div class="p-4 bg-indigo-50 border-b">
+                        <form method="POST" enctype="multipart/form-data" class="space-y-2">
+                            <label class="text-[10px] font-bold text-indigo-400 uppercase block">Carga Masiva (CSV)</label>
+                            <div class="flex items-center space-x-2">
+                                <input type="file" name="csv_festivos" accept=".csv" class="text-[10px] flex-1">
+                                <button type="submit" class="bg-indigo-600 text-white px-2 py-1 rounded text-[10px] font-bold uppercase">Subir</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <div class="max-h-80 overflow-y-auto divide-y divide-slate-50">
+                        <?php foreach($festivos as $f): ?>
+                        <div class="flex justify-between items-center p-3 hover:bg-slate-50 transition">
+                            <div class="text-sm">
+                                <div class="font-bold text-slate-700"><?= $f['fecha'] ?></div>
+                                <div class="text-[11px] text-slate-500 uppercase"><?= htmlspecialchars($f['descripcion']) ?></div>
+                            </div>
+                            <a href="configuracion.php?del_festivo=<?= $f['id'] ?? $f['fecha'] ?>" 
+                               onclick="return confirm('¿Eliminar festivo?')"
+                               class="text-slate-300 hover:text-red-500 transition p-2">
+                                <i class="fas fa-trash-alt"></i>
+                            </a>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+                </div>
+            </div>
+
+            <div class="lg:col-span-2 space-y-6">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <div class="p-4 bg-slate-50 border-b font-bold text-slate-700 flex justify-between items-center">
+                        <span><i class="fas fa-user-plus mr-2 text-indigo-500"></i> Nuevo Empleado</span>
+                    </div>
+                    <form method="POST" class="p-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <input type="hidden" name="accion_empleado" value="crear">
+                        <div class="md:col-span-2">
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre Completo</label>
+                            <input type="text" name="nombre" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Cédula</label>
+                            <input type="text" name="cedula" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Salario Base</label>
+                            <input type="number" name="salario" class="w-full border rounded p-2 text-sm" required>
+                        </div>
+                        <div class="lg:col-span-4 flex justify-end">
+                            <button type="submit" class="bg-slate-900 text-white px-6 py-2 rounded-lg font-bold hover:bg-black transition flex items-center">
+                                <i class="fas fa-save mr-2"></i> Guardar Empleado
+                            </button>
+                        </div>
                     </form>
                 </div>
 
-                <div class="max-h-96 overflow-y-auto">
-                    <table class="w-full text-left text-sm">
-                        <thead class="bg-slate-100 sticky top-0">
+                <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-400 border-b">
                             <tr>
-                                <th class="p-3">Fecha</th>
-                                <th class="p-3">Descripción</th>
-                                <th class="p-3 text-center">Acción</th>
+                                <th class="px-6 py-3">Empleado / Cédula</th>
+                                <th class="px-6 py-3">Salario Base</th>
+                                <th class="px-6 py-3 text-center">Gestión</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            <?php foreach($festivos as $f): ?>
-                            <tr class="border-b hover:bg-gray-50">
-                                <td class="p-3 font-mono"><?= $f['fecha'] ?></td>
-                                <td class="p-3"><?= htmlspecialchars($f['descripcion']) ?></td>
-                                <td class="p-3 text-center">
-                                    <a href="?del_festivo=<?= $f['fecha'] ?>" onclick="return confirm('¿Eliminar festivo?')" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></a>
+                        <tbody class="divide-y divide-slate-100">
+                            <?php foreach($empleados as $e): ?>
+                            <tr class="text-sm hover:bg-indigo-50/30 transition group">
+                                <td class="px-6 py-4">
+                                    <div class="font-bold text-slate-700"><?= htmlspecialchars($e['nombre_completo']) ?></div>
+                                    <div class="text-[10px] text-slate-400 font-mono tracking-wider"><?= $e['cedula'] ?></div>
+                                </td>
+                                <td class="px-6 py-4">
+                                    <div class="font-medium text-slate-600">$<?= number_format($e['salario_base'], 0) ?></div>
+                                    <div class="text-[9px] text-slate-400">Aux: $<?= number_format($e['aux_movilizacion'] + $e['aux_mov_nocturno'], 0) ?></div>
+                                </td>
+                                <td class="px-6 py-4 text-center">
+                                    <button onclick='abrirModalEditar(<?= json_encode($e) ?>)' 
+                                            class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-600 hover:bg-indigo-600 hover:text-white transition shadow-sm">
+                                        <i class="fas fa-edit text-xs"></i>
+                                    </button>
                                 </td>
                             </tr>
                             <?php endforeach; ?>
@@ -269,6 +304,76 @@ $festivos = $pdo->query("SELECT * FROM festivos ORDER BY fecha ASC")->fetchAll(P
             </div>
         </div>
     </div>
-</div>
+
+    <div id="modalEditar" class="opacity-0 pointer-events-none fixed w-full h-full top-0 left-0 flex items-center justify-center z-50 modal">
+        <div class="modal-overlay absolute w-full h-full bg-slate-900 opacity-50"></div>
+        <div class="modal-container bg-white w-11/12 md:max-w-md mx-auto rounded-xl shadow-2xl z-50 overflow-y-auto border border-slate-100">
+            <div class="modal-content py-4 text-left px-6">
+                <div class="flex justify-between items-center pb-3 border-b">
+                    <p class="text-lg font-bold text-slate-800">Editar Empleado</p>
+                    <div class="modal-close cursor-pointer z-50" onclick="cerrarModal()">
+                        <i class="fas fa-times text-slate-400 hover:text-red-500"></i>
+                    </div>
+                </div>
+                <form method="POST" class="mt-4 space-y-4">
+                    <input type="hidden" name="accion_empleado" value="editar">
+                    <input type="hidden" name="id_empleado" id="edit_id">
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase">Nombre Completo</label>
+                        <input type="text" name="nombre" id="edit_nombre" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase">Cédula</label>
+                        <input type="text" name="cedula" id="edit_cedula" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
+                    </div>
+                    <div>
+                        <label class="text-[10px] font-bold text-slate-400 uppercase">Salario Base</label>
+                        <input type="number" name="salario" id="edit_salario" class="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 outline-none" required>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Aux. Movilidad</label>
+                            <input type="number" name="aux_mov" id="edit_aux_mov" class="w-full border rounded p-2 text-sm bg-slate-50">
+                        </div>
+                        <div>
+                            <label class="text-[10px] font-bold text-slate-400 uppercase">Aux. Nocturno</label>
+                            <input type="number" name="aux_mov_noct" id="edit_aux_mov_noct" class="w-full border rounded p-2 text-sm bg-slate-50">
+                        </div>
+                    </div>
+                    <div class="flex justify-end pt-4 space-x-3">
+                        <button type="button" onclick="cerrarModal()" class="px-4 py-2 bg-slate-100 text-slate-500 rounded-lg text-sm font-bold hover:bg-slate-200 transition">Cancelar</button>
+                        <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 transition shadow-lg shadow-indigo-100">Guardar Cambios</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function abrirModalEditar(empleado) {
+            document.getElementById('edit_id').value = empleado.id;
+            document.getElementById('edit_nombre').value = empleado.nombre_completo;
+            document.getElementById('edit_cedula').value = empleado.cedula;
+            document.getElementById('edit_salario').value = empleado.salario_base;
+            document.getElementById('edit_aux_mov').value = empleado.aux_movilizacion || 0;
+            document.getElementById('edit_aux_mov_noct').value = empleado.aux_mov_nocturno || 0;
+
+            const modal = document.getElementById('modalEditar');
+            modal.classList.remove('opacity-0', 'pointer-events-none');
+            document.body.classList.add('modal-active');
+        }
+
+        function cerrarModal() {
+            const modal = document.getElementById('modalEditar');
+            modal.classList.add('opacity-0', 'pointer-events-none');
+            document.body.classList.remove('modal-active');
+        }
+
+        window.onclick = function(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                cerrarModal();
+            }
+        }
+    </script>
 </body>
 </html>
