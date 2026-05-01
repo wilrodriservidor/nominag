@@ -1,4 +1,7 @@
 <?php
+// Configurar la zona horaria para Colombia
+date_default_timezone_set('America/Bogota');
+
 require_once 'config/db.php';
 
 // 1. FUNCIÓN DE CÁLCULO (LA LÓGICA DE 2026 - Corte 7:00 PM)
